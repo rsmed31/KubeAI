@@ -159,12 +159,15 @@ Nobody is solving this. Today's agents are stateful monoliths you deploy manuall
 git clone https://github.com/yourname/KubeAI
 cd KubeAI
 pip install -e .
-cp .env.example .env        # add ANTHROPIC_API_KEY
 
-# run the demo
-python examples/demo.py
+# optional: run tests
+python -m pytest -q
 
-# CLI usage
+# check local CLI state and built-in templates
+agentctl status
+agentctl templates list
+
+# sample CLI usage
 agentctl run "Explain how transformers work"
 agentctl run "Write a Python binary search" --rag basic
 agentctl run "Summarize this doc" --rag reranking --memory summarizing
@@ -174,8 +177,12 @@ agentctl templates list
 agentctl mcps register ./mcp/postgres.yaml
 agentctl mcps list
 agentctl demo
-agentctl status
+
+# run dashboard API + UI
+python -c "from KubeAI.dashboard.server import serve; serve(port=8080)"
 ```
+
+Open `http://localhost:8080` to view the dashboard UI.
 
 ## Use etcd for Shared Memory (Kubernetes-style)
 
@@ -200,6 +207,7 @@ Notes:
 - `working` and `short_term` still default to in-process memory.
 - `long_term_backend="sqlite"` remains available for local-only development.
 - Install backend dependency: `pip install etcd3`
+- If etcd is unavailable, keep `long_term_backend="sqlite"` for local runs.
 
 ## File-Based Pool Config (JSON)
 
@@ -236,24 +244,62 @@ Pool selection hints:
 ```
 KubeAI/
 ├── KubeAI/
-│   ├── runtime.py              # main entrypoint — wires all components
-│   ├── orchestrator.py         # semantic routing + task decomposition
-│   ├── scheduler.py            # agent lifecycle management
-│   ├── memory.py               # shared data plane (3-tier)
-│   ├── registry.py             # blueprint storage + versioning
-│   ├── agent.py                # agent base class + lifecycle states
-│   ├── eval_loop.py            # quality-based health checks
-│   ├── cli.py                  # agentctl
+│   ├── api/
+│   │   ├── __init__.py
+│   │   └── control_plane.py    # in-memory control-plane facade
+│   ├── dashboard/
+│   │   ├── server.py           # FastAPI app + WebSocket stream
+│   │   ├── deps.py             # control-plane dependency injection
+│   │   ├── ws_manager.py
+│   │   ├── api/
+│   │   │   ├── overview.py
+│   │   │   ├── agents.py
+│   │   │   ├── tasks.py
+│   │   │   ├── memory.py
+│   │   │   ├── blueprints.py
+│   │   │   └── monitoring.py
+│   │   └── static/             # dashboard frontend assets
+│   ├── memory/
+│   │   ├── base.py             # SharedMemoryBackend contract
+│   │   ├── in_memory.py        # working/short-term volatile backend
+│   │   ├── sqlite_backend.py   # local persistent backend
+│   │   ├── etcd_backend.py     # kubernetes-style distributed backend
+│   │   └── shared_memory.py    # 3-tier memory facade
+│   ├── monitoring/
+│   │   ├── metrics.py          # metrics registry + Prometheus text output
+│   │   └── events.py           # runtime event stream
+│   ├── orchestrator/
+│   │   ├── llm_pool.py
+│   │   ├── mcp_pool.py
+│   │   ├── a2a_pool.py
+│   │   ├── a2a_router.py
+│   │   ├── assignment.py
+│   │   ├── document_probe.py
+│   │   ├── document_dispatch.py
+│   │   ├── orchestrator.py
+│   │   └── pool_loader.py
+│   ├── scheduler/
+│   │   └── scheduler_module_policy.py
+│   ├── scraper/
+│   │   ├── loader.py
+│   │   ├── normalize.py
+│   │   └── chunk.py
+│   ├── blueprint.py
+│   ├── cli.py
 │   └── templates/
 │       ├── base.py             # template interface
 │       ├── rag/
 │       │   ├── basic.py        # vector search
 │       │   ├── hybrid.py       # BM25 + vector
-│       │   └── reranking.py    # hybrid + cross-encoder rerank
+│       │   ├── reranking.py    # hybrid + cross-encoder rerank
+│       │   ├── scraper.py      # ingestion-oriented RAG template
+│       │   └── knowledge_graph.py
 │       └── memory/
 │           ├── sliding_window.py
 │           ├── summarizing.py
 │           └── episodic.py
+├── examples/
+│   └── pools.sample.json       # declarative pool config
 ├── blueprints/
 │   └── research_agent.yaml
 ├── templates/
@@ -265,31 +311,35 @@ KubeAI/
 │       ├── sliding_window.yaml
 │       ├── summarizing.yaml
 │       └── episodic.yaml
-├── examples/
-│   └── demo.py
 ├── tests/
-├── CLAUDE.md                   # prompt for Claude Code / Cursor
-├── DESIGN.md                   # full architecture rationale
+├── agents.md
+├── plan.md
+├── CLAUDE.md
 ├── README.md
 └── pyproject.toml
 ```
 
 ---
 
-## Roadmap
+## Implementation Status
 
-- [x] Core runtime: orchestrator, scheduler, memory, eval loop
-- [x] Blueprint registry with built-in agent types
-- [x] Semantic routing via LLM scoring
-- [x] Agent GC with memory snapshots
-- [ ] Templates: RAG (basic, hybrid, reranking)
-- [ ] Templates: Memory (sliding window, summarizing, episodic)
-- [ ] `agentctl` CLI with `--rag` and `--memory` flags
-- [ ] Skill writer (agent that generates new blueprints from description)
-- [ ] Persistent memory backend (Redis / SQLite)
-- [ ] REST API + web dashboard
-- [ ] Kubernetes operator (run KubeAI itself on K8s)
-- [ ] CNCF sandbox proposal
+Implemented now:
+- Semantic orchestrator with LLM/MCP/A2A pools and assignment policy.
+- File-based pool loading via JSON (`examples/pools.sample.json`).
+- RAG templates: basic, hybrid, reranking, scraper, knowledge_graph.
+- Memory templates: sliding_window, summarizing, episodic.
+- Shared memory backends: in-memory, SQLite, and etcd.
+- Control-plane facade with metrics/event streams.
+- FastAPI dashboard routes with WebSocket updates and static UI.
+- CLI surface for run, blueprints, templates, MCP registry, status, and demo.
+
+In progress:
+- Wiring orchestrator/scheduler runtime lifecycle directly into control-plane updates.
+- Hardening API contracts and expanding deployment lifecycle management.
+
+Planned:
+- Kubernetes operator and cluster-native deployment workflows.
+- Full productionization of observability/tracing and autoscaling paths.
 
 ---
 
