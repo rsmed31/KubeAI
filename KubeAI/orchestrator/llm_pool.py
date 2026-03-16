@@ -230,6 +230,16 @@ class LLMPool:
         with self._lock:
             return list(self._models.values())
 
+    def start_health_probing(
+        self, interval_s: float = 60.0, timeout_s: float = 10.0
+    ) -> None:
+        """Start background canary probing for all registered models (idempotent)."""
+        from KubeAI.orchestrator.health_prober import HealthProber
+
+        prober = HealthProber(self, interval_s=interval_s, timeout_s=timeout_s)
+        prober.start()
+        self._prober = prober
+
     def __repr__(self) -> str:
         with self._lock:
             return f"LLMPool(models={len(self._models)})"

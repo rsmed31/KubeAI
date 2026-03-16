@@ -10,6 +10,7 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
+from KubeAI.api.state_store import StateStore
 from KubeAI.dashboard.deps import get_control_plane, seed_demo_data
 from KubeAI.dashboard.ws_manager import manager
 from KubeAI.dashboard.api import overview, agents, tasks, memory, blueprints, monitoring
@@ -58,7 +59,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     to all connected dashboard clients.
     """
     cp = get_control_plane()
+    state_store = StateStore()
+    state_store.load(cp)
     seed_demo_data(cp)
+    state_store.start_periodic_checkpoint(cp)
 
     async def _push_loop() -> None:
         while True:

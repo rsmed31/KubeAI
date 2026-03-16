@@ -30,6 +30,9 @@ class SQLiteBackend(SharedMemoryBackend):
     def __init__(self, db_path: str = ":memory:") -> None:
         self._db_path = db_path
         self._lock = threading.RLock()
+        if db_path != ":memory:":
+            from pathlib import Path
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute(_DDL)
         self._conn.commit()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 import uuid
@@ -27,6 +28,9 @@ class SpawnedAgent:
     spawned_at: float = field(default_factory=time.time)
     state: str = "running"       # running | idle | terminated
     task_count: int = 0
+    # Per-agent task queue and executor thread (Gap 2)
+    _task_queue: Any = field(default=None, repr=False, compare=False)
+    _executor_thread: Any = field(default=None, repr=False, compare=False)
 
     def __repr__(self) -> str:
         return (
@@ -69,11 +73,22 @@ class AgentLifecycleManager:
             cost_hint=cost_hint,
         )
         agent_id = f"agent-{uuid.uuid4().hex[:8]}"
+        agent_task_queue: queue.Queue[Any] = queue.Queue()
         agent = SpawnedAgent(
             agent_id=agent_id,
             blueprint=blueprint,
             assignment=assignment,
+            _task_queue=agent_task_queue,
         )
+        # Start a real execution thread for this agent (Gap 2)
+        t = threading.Thread(
+            target=self._agent_loop,
+            args=(agent,),
+            daemon=True,
+            name=f"kubeai-agent-{agent_id}",
+        )
+        t.start()
+        agent._executor_thread = t
         with self._lock:
             self._agents[agent_id] = agent
         # Register in ControlPlaneAPI
@@ -144,6 +159,39 @@ class AgentLifecycleManager:
         """Return all currently tracked (non-terminated) agent instances."""
         with self._lock:
             return list(self._agents.values())
+
+    def _agent_loop(self, agent: SpawnedAgent) -> None:
+        """Per-agent execution thread: drains the agent's task queue (Gap 2)."""
+        from KubeAI.executor.agent_executor import AgentExecutor
+
+        executor = AgentExecutor()
+        while True:
+            try:
+                item = agent._task_queue.get(timeout=1.0)
+            except Exception:
+                # Timed out — check if agent was terminated
+                with self._lock:
+                    if agent.agent_id not in self._agents:
+                        break
+                continue
+
+            if item is None:
+                # Sentinel: terminate the agent loop
+                break
+
+            task_fn, args, kwargs, result_holder = item
+            try:
+                result = task_fn(*args, **kwargs)
+                if result_holder is not None:
+                    result_holder["result"] = result
+            except Exception as exc:
+                if result_holder is not None:
+                    result_holder["error"] = exc
+            finally:
+                try:
+                    agent._task_queue.task_done()
+                except Exception:
+                    pass
 
     def _start_gc_thread(self) -> None:
         def _gc() -> None:

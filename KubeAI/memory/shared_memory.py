@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from .etcd_backend import EtcdBackend
@@ -31,7 +32,7 @@ class SharedMemory:
         short_term: SharedMemoryBackend | None = None,
         long_term: SharedMemoryBackend | None = None,
         short_term_ttl_s: float = 600.0,
-        db_path: str = ":memory:",
+        db_path: str = str(Path.home() / ".kubeai" / "memory.db"),
         long_term_backend: str = "sqlite",
         etcd_host: str = "127.0.0.1",
         etcd_port: int = 2379,

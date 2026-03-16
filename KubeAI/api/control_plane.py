@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 from dataclasses import dataclass, field
@@ -54,6 +55,10 @@ class ControlPlaneAPI:
         self._agents: dict[str, AgentRecord] = {}
         self._tasks: dict[str, TaskRecord] = {}
         self._lock = threading.RLock()
+        # Internal task queue: TaskWorker drains this to execute submitted tasks.
+        self._task_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        # Routing decisions log for dashboard /monitoring and Gap 5 differentiation.
+        self._routing_decisions: list[dict[str, Any]] = []
 
     def register_agent(self, card: "A2AAgentCard", *, state: str = "running") -> AgentRecord:
         """Register or update an agent record from an A2A card."""
@@ -289,13 +294,55 @@ class ControlPlaneAPI:
             "task.submitted",
             {"task_id": task_id, "blueprint": record.blueprint, "description": description[:200]},
         )
-        return {
+        result = {
             "task_id": task_id,
             "blueprint": record.blueprint,
             "status": record.status,
             "description": description,
             "timestamp": timestamp,
         }
+        # Publish to the internal queue so TaskWorker can execute it.
+        self._task_queue.put(result)
+        return result
+
+    def record_routing_decision(
+        self,
+        *,
+        task_id: str,
+        blueprint: str,
+        model_id: str,
+        provider: str,
+        confidence: float,
+        cost_hint: float,
+        latency_ms: float = 0.0,
+    ) -> None:
+        """Record a routing decision for dashboard visibility (Gap 5)."""
+        entry = {
+            "task_id": task_id,
+            "blueprint": blueprint,
+            "model_id": model_id,
+            "provider": provider,
+            "confidence": float(confidence),
+            "cost_hint": float(cost_hint),
+            "latency_ms": float(latency_ms),
+            "timestamp": time.time(),
+        }
+        with self._lock:
+            self._routing_decisions.append(entry)
+            # Keep last 500 decisions to bound memory usage
+            if len(self._routing_decisions) > 500:
+                self._routing_decisions = self._routing_decisions[-500:]
+
+        self._metrics.observe_histogram(
+            "KubeAI_routing_confidence",
+            value=float(confidence),
+            labels={"blueprint": blueprint},
+        )
+
+    def list_routing_decisions(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Return the most recent routing decisions (newest last)."""
+        with self._lock:
+            return list(self._routing_decisions[-max(1, limit):])
 
     def terminate_agent(self, agent_id: str) -> bool:
         """Mark an agent as terminated. Returns False if agent not found."""

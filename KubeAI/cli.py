@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -89,6 +90,7 @@ def main() -> None:
 @click.option("--blueprint", type=str, default=None, help="Preferred blueprint name")
 @click.option("--domain", type=str, default="default", show_default=True, help="Runtime domain")
 @click.option("--json-output", is_flag=True, help="Print request payload as JSON")
+@click.option("--timeout", type=float, default=5.0, show_default=True, help="Seconds to wait for task result (set higher for slow models)")
 def run_task(
     task: str,
     rag_template: str | None,
@@ -96,27 +98,77 @@ def run_task(
     blueprint: str | None,
     domain: str,
     json_output: bool,
+    timeout: float,
 ) -> None:
-    """Build a run request payload for runtime dispatch."""
-    request = {
-        "task": task,
-        "rag_template": rag_template,
-        "memory_template": memory_template,
-        "blueprint": blueprint,
-        "domain": domain,
-    }
-
+    """Submit a task to the KubeAI runtime and print the result."""
     if json_output:
+        request = {
+            "task": task,
+            "rag_template": rag_template,
+            "memory_template": memory_template,
+            "blueprint": blueprint,
+            "domain": domain,
+        }
         click.echo(json.dumps(request, indent=2, sort_keys=True))
         return
 
-    click.echo("Run request prepared")
+    # Always echo task options so callers / tests can confirm what was submitted.
     click.echo(f"Task: {task}")
     click.echo(f"RAG template: {rag_template or 'none'}")
     click.echo(f"Memory template: {memory_template or 'none'}")
     click.echo(f"Blueprint preference: {blueprint or 'auto'}")
     click.echo(f"Domain: {domain}")
-    click.echo("Runtime dispatch integration will be handled by integration lane.")
+
+    try:
+        from KubeAI.dashboard.deps import get_control_plane
+    except ImportError:
+        click.echo("(runtime not available — task logged only)")
+        return
+
+    cp = get_control_plane()
+    task_info = cp.submit_task(task, blueprint=blueprint)
+    task_id = task_info["task_id"]
+    click.echo(f"Submitted task {task_id} — waiting for result...")
+
+    result_text = _poll_task_result(cp, task_id, timeout=timeout)
+    if result_text is not None:
+        click.echo(result_text)
+    else:
+        click.echo(f"Task {task_id} did not complete within the timeout. Check 'agentctl status'.")
+
+
+def _poll_task_result(cp: Any, task_id: str, timeout: float = 120) -> str | None:
+    """Poll until the task completes and return result text, or None on timeout."""
+    from KubeAI.dashboard.deps import get_control_plane
+
+    # Try to read result from shared memory (TaskWorker stores it there)
+    try:
+        from KubeAI.memory.shared_memory import SharedMemory
+        memory = SharedMemory()
+    except Exception:
+        memory = None
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        # Check shared memory first (fastest path)
+        if memory is not None:
+            text = memory.get_short_term("task_results", task_id)
+            if text is not None:
+                return str(text)
+
+        # Fall back to checking task record status
+        with cp._lock:
+            record = cp._tasks.get(task_id)
+        if record is not None and record.status in {"success", "complete", "failed", "error"}:
+            if memory is not None:
+                text = memory.get_short_term("task_results", task_id)
+                if text is not None:
+                    return str(text)
+            return f"Task completed with status: {record.status}"
+
+        time.sleep(0.5)
+
+    return None
 
 
 @main.group("blueprints")
@@ -254,13 +306,52 @@ def mcps_register(path_or_url: str) -> None:
 
 @main.command("status")
 def status() -> None:
-    """Show local CLI registry status."""
+    """Show runtime status including model pool health, agents, and tasks."""
     state = _load_state()
     click.echo("KubeAI CLI status")
     click.echo(f"- Registered blueprints: {len(state['blueprints'])}")
     click.echo(f"- Registered MCP servers: {len(state['mcps'])}")
     click.echo(f"- Built-in RAG templates: {len(_RAG_TEMPLATES)}")
     click.echo(f"- Built-in memory templates: {len(_MEMORY_TEMPLATES)}")
+
+    # Try to pull live runtime data
+    try:
+        from KubeAI.dashboard.deps import get_control_plane
+        cp = get_control_plane()
+    except Exception:
+        click.echo("\n(runtime not available — start with `agentctl api-server`)")
+        return
+
+    # ── Control plane overview ────────────────────────────────────────────
+    try:
+        overview = cp.get_overview()
+        click.echo("\nControl Plane")
+        click.echo(f"  Active agents : {overview['active_agents']} / {overview['agents_total']}")
+        click.echo(f"  Tasks total   : {overview['tasks_total']}")
+        click.echo(f"  Avg latency   : {overview['avg_latency_ms']:.0f} ms")
+    except Exception:
+        pass
+
+    # ── LLM pool table (kubectl get nodes equivalent) ─────────────────────
+    try:
+        from KubeAI.orchestrator.llm_pool import LLMPool
+        # Only available if a pool was attached to the dashboard control plane
+        pool = getattr(cp, "_llm_pool", None)
+        if pool is not None:
+            models = pool.list_models()
+            if models:
+                click.echo("\nModel Pool")
+                header = f"  {'MODEL':<40} {'TIER':<10} {'HEALTH':<8} {'LOAD':<6} {'COST/1K':>8}"
+                click.echo(header)
+                click.echo("  " + "-" * 74)
+                for m in sorted(models, key=lambda x: x.model_id):
+                    health = "healthy" if m.healthy else "UNHEALTHY"
+                    click.echo(
+                        f"  {m.model_id:<40} {m.tier.value:<10} {health:<8} "
+                        f"{m.load:<6.2f} ${m.cost_per_1k_tokens:>7.4f}"
+                    )
+    except Exception:
+        pass
 
 
 @main.command("demo")
