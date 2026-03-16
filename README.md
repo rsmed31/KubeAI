@@ -177,6 +177,30 @@ agentctl demo
 agentctl status
 ```
 
+## Use etcd for Shared Memory (Kubernetes-style)
+
+If you want KubeAI memory persistence to match Kubernetes control-plane storage,
+use the etcd-backed backend for long-term tier keys.
+
+```python
+from KubeAI.memory import SharedMemory
+
+memory = SharedMemory(
+  long_term_backend="etcd",
+  etcd_host="127.0.0.1",
+  etcd_port=2379,
+  etcd_namespace="kubeai",
+)
+
+memory.set_long_term("coding_agent", "style", {"guide": "pep8"})
+print(memory.get_long_term("coding_agent", "style"))
+```
+
+Notes:
+- `working` and `short_term` still default to in-process memory.
+- `long_term_backend="sqlite"` remains available for local-only development.
+- Install backend dependency: `pip install etcd3`
+
 ## File-Based Pool Config (JSON)
 
 Define all orchestrator pools in one JSON file and load them at startup.

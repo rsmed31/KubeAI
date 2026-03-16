@@ -1,11 +1,15 @@
-"""Unit tests for SharedMemory, InMemoryBackend, and SQLiteBackend."""
+"""Unit tests for SharedMemory and memory backends including in-memory, SQLite, and etcd."""
 
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 
+from KubeAI.memory import etcd_backend as etcd_module
+from KubeAI.memory.etcd_backend import EtcdBackend
 from KubeAI.memory.in_memory import InMemoryBackend
 from KubeAI.memory.shared_memory import SharedMemory
 from KubeAI.memory.sqlite_backend import SQLiteBackend
@@ -131,6 +135,103 @@ class TestSQLiteBackend:
         assert ":memory:" in r
 
 
+# ── EtcdBackend (with fake client) ───────────────────────────────────────
+
+
+@dataclass
+class _FakeLease:
+    ttl: int
+
+
+@dataclass
+class _FakeMetadata:
+    key: bytes
+
+
+class _FakeEtcdClient:
+    def __init__(self) -> None:
+        self.store: dict[str, tuple[bytes, _FakeLease | None]] = {}
+
+    def get(self, key: str) -> tuple[bytes | None, _FakeMetadata | None]:
+        row = self.store.get(key)
+        if row is None:
+            return None, None
+        value, _lease = row
+        return value, _FakeMetadata(key=key.encode("utf-8"))
+
+    def put(self, key: str, value: str, lease: _FakeLease | None = None) -> None:
+        self.store[key] = (value.encode("utf-8"), lease)
+
+    def delete(self, key: str) -> bool:
+        return self.store.pop(key, None) is not None
+
+    def get_prefix(self, prefix: str) -> list[tuple[bytes, _FakeMetadata]]:
+        rows: list[tuple[bytes, _FakeMetadata]] = []
+        for key, (value, _lease) in self.store.items():
+            if key.startswith(prefix):
+                rows.append((value, _FakeMetadata(key=key.encode("utf-8"))))
+        return rows
+
+    def delete_prefix(self, prefix: str) -> None:
+        for key in list(self.store):
+            if key.startswith(prefix):
+                del self.store[key]
+
+    def lease(self, ttl: int) -> _FakeLease:
+        return _FakeLease(ttl=ttl)
+
+
+class TestEtcdBackend:
+    def test_set_get_and_prefix_keys(self) -> None:
+        backend = EtcdBackend(client=_FakeEtcdClient(), namespace="ns")
+        backend.set("long_term:agent:fact", {"ok": True})
+        backend.set("long_term:agent:other", 2)
+        backend.set("working:agent-1:ctx", "value")
+
+        assert backend.get("long_term:agent:fact") == {"ok": True}
+        assert sorted(backend.keys("long_term:agent:")) == [
+            "long_term:agent:fact",
+            "long_term:agent:other",
+        ]
+
+    def test_delete_and_clear(self) -> None:
+        backend = EtcdBackend(client=_FakeEtcdClient(), namespace="ns")
+        backend.set("k1", 1)
+        backend.set("k2", 2)
+
+        assert backend.delete("k1") is True
+        assert backend.delete("missing") is False
+        backend.clear()
+        assert backend.keys() == []
+
+    def test_set_with_ttl_uses_lease(self) -> None:
+        client = _FakeEtcdClient()
+        backend = EtcdBackend(client=client, namespace="ns")
+
+        backend.set("ttl-key", "v", ttl_s=0.2)
+
+        value, lease = client.store["ns:ttl-key"]
+        assert value.decode("utf-8") == '"v"'
+        assert lease is not None
+        assert lease.ttl == 1
+
+    def test_missing_etcd_dependency_raises_clear_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _raise() -> SimpleNamespace:
+            raise ModuleNotFoundError("No module named 'etcd3'")
+
+        monkeypatch.setattr(etcd_module, "_load_etcd3_module", _raise)
+
+        with pytest.raises(RuntimeError, match="Install it with 'pip install etcd3'"):
+            EtcdBackend()
+
+    def test_repr_contains_backend_details(self) -> None:
+        backend = EtcdBackend(client=_FakeEtcdClient(), namespace="ns")
+        backend.set("a", 1)
+        text = repr(backend)
+        assert "EtcdBackend" in text
+        assert "namespace='ns'" in text
+
+
 # ── SharedMemory facade ───────────────────────────────────────────────────
 
 
@@ -210,3 +311,15 @@ class TestSharedMemory:
         assert "SharedMemory" in r
         assert "working" in r
         assert "long_term" in r
+
+    def test_selects_etcd_long_term_backend_when_configured(self) -> None:
+        m = SharedMemory(
+            long_term_backend="etcd",
+            etcd_client=_FakeEtcdClient(),
+        )
+        m.set_long_term("bp", "fact", "value")
+        assert m.get_long_term("bp", "fact") == "value"
+
+    def test_invalid_long_term_backend_raises(self) -> None:
+        with pytest.raises(ValueError, match="sqlite|etcd"):
+            SharedMemory(long_term_backend="postgres")

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .etcd_backend import EtcdBackend
+
 from .base import SharedMemoryBackend
 from .in_memory import InMemoryBackend
 from .sqlite_backend import SQLiteBackend
@@ -15,7 +17,7 @@ class SharedMemory:
     Tier layout (mirrors Kubernetes volume types):
       working    — ephemeral per-agent context  (InMemoryBackend, no TTL)
       short_term — session-scoped shared state  (InMemoryBackend, TTL-bounded)
-      long_term  — blueprint-scoped persistence (SQLiteBackend, survives restart)
+            long_term  — blueprint-scoped persistence (SQLiteBackend or EtcdBackend)
 
     Key namespacing:
       working    → "working:{agent_id}:{key}"
@@ -30,11 +32,61 @@ class SharedMemory:
         long_term: SharedMemoryBackend | None = None,
         short_term_ttl_s: float = 600.0,
         db_path: str = ":memory:",
+        long_term_backend: str = "sqlite",
+        etcd_host: str = "127.0.0.1",
+        etcd_port: int = 2379,
+        etcd_namespace: str = "kubeai",
+        etcd_timeout_s: float = 5.0,
+        etcd_user: str | None = None,
+        etcd_password: str | None = None,
+        etcd_client: Any | None = None,
     ) -> None:
         self._working: SharedMemoryBackend = working or InMemoryBackend()
         self._short_term: SharedMemoryBackend = short_term or InMemoryBackend()
-        self._long_term: SharedMemoryBackend = long_term or SQLiteBackend(db_path)
+        self._long_term: SharedMemoryBackend = long_term or self._build_long_term_backend(
+            long_term_backend=long_term_backend,
+            db_path=db_path,
+            etcd_host=etcd_host,
+            etcd_port=etcd_port,
+            etcd_namespace=etcd_namespace,
+            etcd_timeout_s=etcd_timeout_s,
+            etcd_user=etcd_user,
+            etcd_password=etcd_password,
+            etcd_client=etcd_client,
+        )
         self._short_term_ttl_s = short_term_ttl_s
+
+    @staticmethod
+    def _build_long_term_backend(
+        *,
+        long_term_backend: str,
+        db_path: str,
+        etcd_host: str,
+        etcd_port: int,
+        etcd_namespace: str,
+        etcd_timeout_s: float,
+        etcd_user: str | None,
+        etcd_password: str | None,
+        etcd_client: Any | None,
+    ) -> SharedMemoryBackend:
+        backend_name = long_term_backend.strip().lower()
+
+        if backend_name == "sqlite":
+            return SQLiteBackend(db_path)
+        if backend_name == "etcd":
+            return EtcdBackend(
+                host=etcd_host,
+                port=etcd_port,
+                namespace=etcd_namespace,
+                timeout_s=etcd_timeout_s,
+                user=etcd_user,
+                password=etcd_password,
+                client=etcd_client,
+            )
+
+        raise ValueError(
+            "long_term_backend must be 'sqlite' or 'etcd'"
+        )
 
     # ── Working tier (per-agent, ephemeral) ───────────────────────────────
 
