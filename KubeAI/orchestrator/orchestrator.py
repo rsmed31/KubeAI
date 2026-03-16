@@ -69,7 +69,7 @@ class DocumentRunResult:
 
 def _llm_score(task: str, blueprint: "Blueprint", model_id: str) -> float:
     """
-    Default LLM-based scorer using the Anthropic SDK.
+    Default LLM-based scorer using LiteLLM.
 
     Builds a prompt that asks the model to rate how well a blueprint matches a
     task, then parses the single decimal response. Falls back to 0.0 on any
@@ -84,7 +84,7 @@ def _llm_score(task: str, blueprint: "Blueprint", model_id: str) -> float:
         A float in [0.0, 1.0].
     """
     try:
-        import anthropic  # type: ignore[import]
+        import litellm  # type: ignore[import]
     except ImportError:
         return 0.0
 
@@ -95,13 +95,12 @@ def _llm_score(task: str, blueprint: "Blueprint", model_id: str) -> float:
         f"Reply with only a decimal between 0.0 and 1.0."
     )
     try:
-        client = anthropic.Anthropic()
-        response = client.messages.create(
+        response = litellm.completion(
             model=model_id,
-            max_tokens=16,
             messages=[{"role": "user", "content": prompt}],
+            max_tokens=16,
         )
-        raw = response.content[0].text.strip()
+        raw = response.choices[0].message.content.strip()
         return max(0.0, min(1.0, float(raw)))
     except Exception:
         return 0.0
@@ -109,7 +108,7 @@ def _llm_score(task: str, blueprint: "Blueprint", model_id: str) -> float:
 
 def _llm_decompose(task: str, model_id: str, max_subtasks: int = 5) -> list[str]:
     """
-    Default LLM-based task decomposer using the Anthropic SDK.
+    Default LLM-based task decomposer using LiteLLM.
 
     Sends a prompt asking the model to split a task into independent parallel
     subtasks and returns one non-empty line per subtask.
@@ -123,7 +122,7 @@ def _llm_decompose(task: str, model_id: str, max_subtasks: int = 5) -> list[str]
         A list of non-empty subtask strings.
     """
     try:
-        import anthropic  # type: ignore[import]
+        import litellm  # type: ignore[import]
     except ImportError:
         return [task]
 
@@ -133,13 +132,12 @@ def _llm_decompose(task: str, model_id: str, max_subtasks: int = 5) -> list[str]
         f"Reply with one subtask per line, no numbering."
     )
     try:
-        client = anthropic.Anthropic()
-        response = client.messages.create(
+        response = litellm.completion(
             model=model_id,
-            max_tokens=256,
             messages=[{"role": "user", "content": prompt}],
+            max_tokens=256,
         )
-        raw = response.content[0].text
+        raw = response.choices[0].message.content
         return [line.strip() for line in raw.splitlines() if line.strip()]
     except Exception:
         return [task]
