@@ -91,8 +91,12 @@ class TestOrchestratorDocumentRun:
         assert result.agent_id == "agent-spawned-1"
         assert [server.server_id for server in result.assignment.mcp_servers] == ["web"]
         assert result.dispatch.routed_task.target.agent_id == "agent-spawned-1"
+        assert blueprint.description in result.dispatch.routed_task.target.description
+        assert "rag=scraper" in result.dispatch.routed_task.target.description
+        assert "mcps=web" in result.dispatch.routed_task.target.description
         assert result.dispatch.routed_task.payload["document"] == large_document
         assert result.dispatch.routed_task.payload["document_preview"]
+        assert result.dispatch.routed_task.payload["agent_id"] == "agent-spawned-1"
 
         event_stages = [event.stage for event in result.events]
         assert event_stages == [
@@ -132,3 +136,27 @@ class TestOrchestratorDocumentRun:
         assert spawn.metadata["rag_template"] == "basic"
         assert result.assignment.mcp_servers == ()
         assert result.dispatch.probe.estimated_tokens > 0
+
+    def test_spawn_callback_without_id_gets_generated_tracking_id(self) -> None:
+        policy = _make_policy()
+        blueprint = Blueprint(
+            name="tracker_agent",
+            description="Tracking-focused route target.",
+            tier=ModelTier.FAST,
+        )
+
+        pool = A2APool()
+        spawn = _SpawnRecorder(agent_id="   ")
+        orch = Orchestrator(policy=policy, score_fn=lambda task, bp, model_id: 0.65)
+
+        result = orch.orchestrate_document_run(
+            task="Summarize tracking metadata",
+            document="short doc",
+            blueprints=[blueprint],
+            a2a_pool=pool,
+            spawn_agent_fn=spawn,
+        )
+
+        assert result.agent_id.startswith("agent-")
+        assert result.dispatch.routed_task.target.agent_id == result.agent_id
+        assert result.dispatch.routed_task.payload["agent_id"] == result.agent_id

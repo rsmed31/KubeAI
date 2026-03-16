@@ -28,7 +28,7 @@ DecomposeFn = Callable[[str, str], list[str]]
 StatusCallback = Callable[["RunStatusEvent"], None]
 
 # Type alias: spawn callback that returns the spawned agent id.
-SpawnAgentFn = Callable[["Blueprint", Assignment, dict[str, Any]], str]
+SpawnAgentFn = Callable[["Blueprint", Assignment, dict[str, Any]], str | None]
 
 
 @dataclass(frozen=True)
@@ -372,11 +372,21 @@ class Orchestrator:
             for capability in server.capabilities
         }
         agent_capabilities = sorted(required_capabilities.union(mcp_capabilities))
+        runtime_description = self._build_runtime_agent_description(
+            blueprint=blueprint,
+            assignment=assignment,
+            rag_template=rag_template,
+            capabilities=agent_capabilities,
+        )
+        proposed_agent_id = preferred_agent_id or self._default_agent_id(run_id)
 
         spawned_agent_id = preferred_agent_id
         spawn_metadata = {
             "run_id": run_id,
+            "tracking_id": run_id,
+            "proposed_agent_id": proposed_agent_id,
             "blueprint": blueprint.name,
+            "description": runtime_description,
             "assignment": {
                 "model_id": assignment.model_id,
                 "provider": assignment.provider,
@@ -394,19 +404,30 @@ class Orchestrator:
         if spawn_agent_fn is not None:
             spawned_agent_id = spawn_agent_fn(blueprint, assignment, spawn_metadata)
 
-        if spawned_agent_id is not None:
+        resolved_spawn_id = None
+        if spawned_agent_id is not None and str(spawned_agent_id).strip():
+            resolved_spawn_id = str(spawned_agent_id).strip()
+        elif spawn_agent_fn is not None:
+            # If spawn happened but no id came back, fall back to deterministic id for tracking.
+            resolved_spawn_id = proposed_agent_id
+
+        if resolved_spawn_id is not None:
+            spawn_metadata["agent_id"] = resolved_spawn_id
+
+        if resolved_spawn_id is not None:
             card = A2AAgentCard(
-                agent_id=spawned_agent_id,
-                name=f"{blueprint.name}-{spawned_agent_id}",
-                endpoint=f"http://localhost/agents/{spawned_agent_id}",
+                agent_id=resolved_spawn_id,
+                name=f"{blueprint.name}-{resolved_spawn_id}",
+                endpoint=f"http://localhost/agents/{resolved_spawn_id}",
                 capabilities=frozenset(agent_capabilities),
+                description=runtime_description,
                 metadata=spawn_metadata,
             )
             a2a_pool.register(card)
             _emit(
                 "spawn_agent",
                 "Registered spawned agent in A2A pool for direct dispatch.",
-                agent_id=spawned_agent_id,
+                agent_id=resolved_spawn_id,
                 rag_template=rag_template,
             )
         else:
@@ -425,13 +446,13 @@ class Orchestrator:
         _emit(
             "dispatch_document",
             "Dispatching document to RAG-ready agent.",
-            preferred_agent_id=spawned_agent_id,
+            preferred_agent_id=resolved_spawn_id,
             required_capabilities=agent_capabilities,
         )
         dispatch = dispatcher.dispatch(
             task=task,
             document=document,
-            preferred_agent_id=spawned_agent_id,
+            preferred_agent_id=resolved_spawn_id,
             required_capabilities=agent_capabilities,
             metadata={
                 **spawn_metadata,
@@ -476,6 +497,35 @@ class Orchestrator:
         if "knowledge_graph" in probe.required_capabilities:
             return "knowledge_graph"
         return "basic"
+
+    @staticmethod
+    def _default_agent_id(run_id: str) -> str:
+        suffix = run_id[4:] if run_id.startswith("run-") else run_id
+        return f"agent-{suffix}"
+
+    @staticmethod
+    def _build_runtime_agent_description(
+        *,
+        blueprint: "Blueprint",
+        assignment: Assignment,
+        rag_template: str,
+        capabilities: list[str],
+    ) -> str:
+        mcp_parts = []
+        for server in assignment.mcp_servers:
+            if server.description.strip():
+                mcp_parts.append(f"{server.server_id} ({server.description})")
+            else:
+                mcp_parts.append(server.server_id)
+
+        mcp_text = ", ".join(mcp_parts) if mcp_parts else "none"
+        capability_text = ", ".join(capabilities) if capabilities else "none"
+        return (
+            f"{blueprint.description} "
+            f"Runtime profile: model={assignment.model_id} provider={assignment.provider} "
+            f"tier={assignment.tier.value}; rag={rag_template}; "
+            f"mcps={mcp_text}; capabilities={capability_text}."
+        )
 
     def __repr__(self) -> str:
         return f"Orchestrator(policy={self._policy!r})"
