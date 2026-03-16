@@ -1,0 +1,4 @@
+name: knowledge_graph
+max_nodes: 500
+max_edges: 2000
+min_entity_chars: 3

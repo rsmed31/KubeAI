@@ -1,0 +1,4 @@
+name: summarizing
+token_threshold: 1500
+keep_recent_turns: 10
+summarizer_strategy: runtime

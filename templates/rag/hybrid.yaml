@@ -1,0 +1,7 @@
+name: hybrid
+bm25_weight: 0.5
+vector_weight: 0.5
+rrf_k: 60
+vector_dim: 256
+top_k: 5
+similarity_threshold: 0.0

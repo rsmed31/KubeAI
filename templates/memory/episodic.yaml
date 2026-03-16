@@ -1,0 +1,4 @@
+name: episodic
+max_facts: 200
+similarity_threshold: 0.1
+min_fact_tokens: 3
