@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import copy
+import re
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Iterable
+
+
+_TOKEN_PATTERN = re.compile(r"[a-z0-9_]+")
 
 
 @dataclass
@@ -16,6 +20,7 @@ class A2AAgentCard:
     name: str
     endpoint: str
     capabilities: frozenset[str]
+    description: str = ""
     load: float = 0.0
     healthy: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -90,6 +95,7 @@ class A2APool:
         required_capabilities: Iterable[str] = (),
         *,
         preferred_agent_id: str | None = None,
+        task: str = "",
     ) -> A2AAgentCard:
         """Select the best matching A2A target from capability and load signals."""
         needed = set(required_capabilities)
@@ -119,13 +125,29 @@ class A2APool:
                     if chosen.load <= self._LOAD_THRESHOLD or len(candidates) == 1:
                         return copy.copy(chosen)
 
-            def _score(card: A2AAgentCard) -> tuple[int, int, float, str]:
+            def _score(card: A2AAgentCard) -> tuple[int, int, float, float, str]:
                 overlap = len(card.capabilities.intersection(needed))
                 overload = int(card.load > self._LOAD_THRESHOLD)
-                return (overload, -overlap, card.load, card.agent_id)
+                relevance = self._text_overlap(
+                    task,
+                    f"{card.name} {card.description}",
+                )
+                return (overload, -overlap, -relevance, card.load, card.agent_id)
 
             ranked = sorted(candidates, key=_score)
             return copy.copy(ranked[0])
+
+    @staticmethod
+    def _text_overlap(task: str, description: str) -> float:
+        if not task.strip() or not description.strip():
+            return 0.0
+
+        task_tokens = set(_TOKEN_PATTERN.findall(task.lower()))
+        desc_tokens = set(_TOKEN_PATTERN.findall(description.lower()))
+        if not task_tokens or not desc_tokens:
+            return 0.0
+
+        return float(len(task_tokens.intersection(desc_tokens)))
 
     def acquire_connection(self, agent_id: str) -> A2AConnection:
         """Return a reusable connection handle for an agent endpoint."""

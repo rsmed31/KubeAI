@@ -49,6 +49,7 @@ class A2ARouter:
         target = self._pool.select(
             required_capabilities=required_capabilities,
             preferred_agent_id=preferred_agent_id,
+            task=task,
         )
         connection = self._pool.acquire_connection(target.agent_id)
         task_id = f"a2a-task-{next(self._counter)}"

@@ -167,3 +167,47 @@ class TestFailoverIntegration:
         policy, _, _ = _make_policy()
         assert "LLMPool" in repr(policy)
         assert "MCPPool" in repr(policy)
+
+
+class TestDescriptionAwareSelection:
+    def test_task_text_guides_model_and_mcp_selection(self) -> None:
+        llm = LLMPool()
+        llm.register(ModelEntry("cloud-fast", "anthropic", ModelTier.FAST, 0.001))
+        llm.register(
+            ModelEntry(
+                "llama3.1:8b",
+                "ollama",
+                ModelTier.FAST,
+                0.0,
+                description="local offline ollama runtime",
+            )
+        )
+
+        mcp = MCPPool()
+        mcp.register(
+            MCPServer(
+                "internet-search",
+                "http://search:8080",
+                frozenset(["search"]),
+                description="internet web research",
+            )
+        )
+        mcp.register(
+            MCPServer(
+                "repo-search",
+                "http://repo:8080",
+                frozenset(["search"]),
+                description="repository code symbol lookup",
+            )
+        )
+
+        policy = AssignmentPolicy(llm, mcp)
+        assignment = policy.assign(
+            blueprint_tier=ModelTier.FAST,
+            required_capabilities=["search"],
+            cost_hint=0.1,
+            task="run locally with ollama and search web documentation",
+        )
+
+        assert assignment.model_id == "llama3.1:8b"
+        assert assignment.mcp_servers[0].server_id == "internet-search"

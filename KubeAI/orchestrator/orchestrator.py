@@ -245,7 +245,8 @@ class Orchestrator:
 
         Args:
             blueprint: The Blueprint to assign resources for.
-            task: Optional task string (reserved for future cost estimation).
+            task: Optional task string forwarded to assignment policy for
+                  description-aware pool selection.
             cost_hint: Float 0.0 (cheapest) to 1.0 (most capable).
 
         Returns:
@@ -255,6 +256,7 @@ class Orchestrator:
             blueprint_tier=blueprint.tier,
             required_capabilities=blueprint.required_capabilities,
             cost_hint=cost_hint,
+            task=task,
         )
 
     def orchestrate_document_run(
@@ -348,6 +350,7 @@ class Orchestrator:
             blueprint_tier=blueprint.tier,
             required_capabilities=mcp_required_capabilities,
             cost_hint=probe.cost_hint,
+            task=route_task,
         )
         _emit(
             "assign_resources",

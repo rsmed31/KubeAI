@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import threading
 from dataclasses import dataclass
 from enum import Enum
@@ -34,6 +35,16 @@ _TIER_RANK: dict[ModelTier, int] = {
     ModelTier.BEST: 2,
 }
 
+_TOKEN_PATTERN = re.compile(r"[a-z0-9_]+")
+_LOCAL_PROVIDERS = frozenset({
+    "ollama",
+    "local",
+    "llama.cpp",
+    "llamacpp",
+    "vllm",
+    "lmstudio",
+})
+
 
 @dataclass
 class ModelEntry:
@@ -45,10 +56,17 @@ class ModelEntry:
     cost_per_1k_tokens: float  # USD
     load: float = 0.0          # 0.0 = idle, 1.0 = saturated
     healthy: bool = True
+    description: str = ""
+    is_local: bool = False
+
+    def is_local_runtime(self) -> bool:
+        """Return True when this model runs on a local runtime (e.g. Ollama)."""
+        return self.is_local or self.provider.lower() in _LOCAL_PROVIDERS
 
     def __repr__(self) -> str:
         return (
-            f"ModelEntry(model_id={self.model_id!r}, tier={self.tier.value!r}, "
+            f"ModelEntry(model_id={self.model_id!r}, provider={self.provider!r}, "
+            f"tier={self.tier.value!r}, local={self.is_local_runtime()}, "
             f"load={self.load:.2f}, healthy={self.healthy})"
         )
 
@@ -115,6 +133,7 @@ class LLMPool:
         *,
         minimum_tier: ModelTier = ModelTier.FAST,
         cost_hint: float = 0.5,
+        task: str = "",
     ) -> ModelEntry:
         """
         Select a model for an agent workload.
@@ -149,11 +168,24 @@ class LLMPool:
                     f"No models registered at or above tier {minimum_tier.value!r}"
                 )
 
-            def _score(m: ModelEntry) -> tuple[int, int, float]:
+            prefer_local = self._prefers_local_runtime(task)
+
+            def _score(m: ModelEntry) -> tuple[int, int, int, float, float]:
                 # Lower score = more preferred
                 tier_distance = abs(_TIER_RANK[m.tier] - _TIER_RANK[desired_tier])
                 is_overloaded = int(m.load > self._LOAD_THRESHOLD)
-                return (is_overloaded, tier_distance, m.cost_per_1k_tokens)
+                local_miss = int(prefer_local and not m.is_local_runtime())
+                relevance = self._text_overlap(
+                    task,
+                    f"{m.model_id} {m.provider} {m.description}",
+                )
+                return (
+                    is_overloaded,
+                    local_miss,
+                    tier_distance,
+                    -relevance,
+                    m.cost_per_1k_tokens,
+                )
 
             healthy = [m for m in eligible if m.healthy]
             ranked = sorted(healthy or eligible, key=_score)
@@ -167,6 +199,31 @@ class LLMPool:
         if cost_hint < 0.67:
             return ModelTier.CAPABLE
         return ModelTier.BEST
+
+    @staticmethod
+    def _prefers_local_runtime(task: str) -> bool:
+        lowered = task.lower()
+        local_signals = (
+            "local",
+            "offline",
+            "on-device",
+            "on prem",
+            "on-prem",
+            "ollama",
+        )
+        return any(signal in lowered for signal in local_signals)
+
+    @staticmethod
+    def _text_overlap(task: str, description: str) -> float:
+        if not task.strip() or not description.strip():
+            return 0.0
+
+        task_tokens = set(_TOKEN_PATTERN.findall(task.lower()))
+        desc_tokens = set(_TOKEN_PATTERN.findall(description.lower()))
+        if not task_tokens or not desc_tokens:
+            return 0.0
+
+        return float(len(task_tokens.intersection(desc_tokens)))
 
     def list_models(self) -> list[ModelEntry]:
         """Return a snapshot of all registered models."""

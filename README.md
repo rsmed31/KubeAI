@@ -177,6 +177,34 @@ agentctl demo
 agentctl status
 ```
 
+## File-Based Pool Config (JSON)
+
+Define all orchestrator pools in one JSON file and load them at startup.
+
+Sample file: `examples/pools.sample.json`
+
+```python
+from KubeAI.orchestrator import load_assignment_policy_from_json, load_pools_from_json
+
+bundle = load_pools_from_json("examples/pools.sample.json")
+policy = load_assignment_policy_from_json("examples/pools.sample.json")
+
+# Use in runtime bootstrap
+llm_pool = bundle.llm_pool
+mcp_pool = bundle.mcp_pool
+a2a_pool = bundle.a2a_pool
+```
+
+Expected top-level JSON keys:
+- `llm_models`
+- `mcp_servers`
+- `a2a_agents`
+
+Pool selection hints:
+- `description` can be added to LLM, MCP, and A2A entries.
+- Assignment uses task text + description overlap to prefer better-fitting models/tools.
+- For local inference, set provider to `ollama` or `local` (or set `is_local: true`).
+
 ---
 
 ## Project Structure

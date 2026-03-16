@@ -1,0 +1,81 @@
+{
+  "llm_models": [
+    {
+      "model_id": "claude-haiku-4",
+      "provider": "anthropic",
+      "tier": "fast",
+      "cost_per_1k_tokens": 0.001,
+      "description": "Fast cloud model for simple classification and short responses.",
+      "healthy": true,
+      "load": 0.1
+    },
+    {
+      "model_id": "claude-sonnet-4",
+      "provider": "anthropic",
+      "tier": "capable",
+      "cost_per_1k_tokens": 0.003,
+      "description": "Balanced cloud model for coding, analysis, and orchestration.",
+      "healthy": true,
+      "load": 0.2
+    },
+    {
+      "model_id": "claude-opus-4",
+      "provider": "anthropic",
+      "tier": "best",
+      "cost_per_1k_tokens": 0.015,
+      "description": "Highest-quality cloud model for hard reasoning and routing-quality decisions.",
+      "healthy": true,
+      "load": 0.4
+    },
+    {
+      "model_id": "llama3.1:8b",
+      "provider": "ollama",
+      "tier": "fast",
+      "cost_per_1k_tokens": 0.0,
+      "description": "Local Ollama runtime model for offline/private workloads.",
+      "is_local": true,
+      "healthy": true,
+      "load": 0.15
+    },
+    {
+      "model_id": "mistral-local-7b",
+      "provider": "local",
+      "tier": "capable",
+      "cost_per_1k_tokens": 0.0,
+      "description": "Generic local runtime model hosted on-prem for private inference.",
+      "is_local": true,
+      "healthy": true,
+      "load": 0.35
+    }
+  ],
+  "mcp_servers": [
+    {
+      "server_id": "web",
+      "endpoint": "http://localhost:8091",
+      "capabilities": ["web_search", "fetch_url"],
+      "description": "Web search and URL retrieval over internet sources.",
+      "healthy": true
+    },
+    {
+      "server_id": "code",
+      "endpoint": "http://localhost:8092",
+      "capabilities": ["code_exec", "file_read"],
+      "description": "Code execution and repository file inspection tools.",
+      "healthy": true
+    }
+  ],
+  "a2a_agents": [
+    {
+      "agent_id": "research-1",
+      "name": "research-1",
+      "endpoint": "http://localhost:9001/agents/research-1",
+      "capabilities": ["rag_retrieval", "fetch_url", "web_search"],
+      "description": "Research and web-grounded summarization specialist.",
+      "load": 0.25,
+      "healthy": true,
+      "metadata": {
+        "rag_template": "scraper"
+      }
+    }
+  ]
+}

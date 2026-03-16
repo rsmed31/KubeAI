@@ -140,3 +140,51 @@ class TestSelect:
     def test_repr_on_entry(self) -> None:
         assert "claude-haiku-4" in repr(HAIKU)
         assert "fast" in repr(HAIKU)
+
+    def test_task_description_prefers_matching_model(self) -> None:
+        coding = ModelEntry(
+            "code-model",
+            "anthropic",
+            ModelTier.CAPABLE,
+            cost_per_1k_tokens=0.003,
+            description="python coding debug stack traces",
+        )
+        writing = ModelEntry(
+            "writing-model",
+            "anthropic",
+            ModelTier.CAPABLE,
+            cost_per_1k_tokens=0.003,
+            description="creative writing storytelling prose",
+        )
+        pool = _pool(coding, writing)
+
+        model = pool.select(
+            minimum_tier=ModelTier.CAPABLE,
+            cost_hint=0.5,
+            task="debug this python stack trace",
+        )
+        assert model.model_id == "code-model"
+
+    def test_local_task_prefers_ollama_or_local_runtime(self) -> None:
+        cloud = ModelEntry(
+            "cloud-fast",
+            "anthropic",
+            ModelTier.FAST,
+            cost_per_1k_tokens=0.001,
+        )
+        ollama = ModelEntry(
+            "llama3.1:8b",
+            "ollama",
+            ModelTier.FAST,
+            cost_per_1k_tokens=0.0,
+            description="local ollama runtime",
+        )
+        pool = _pool(cloud, ollama)
+
+        model = pool.select(
+            minimum_tier=ModelTier.FAST,
+            cost_hint=0.1,
+            task="run this offline on local ollama",
+        )
+        assert model.model_id == "llama3.1:8b"
+        assert model.is_local_runtime() is True

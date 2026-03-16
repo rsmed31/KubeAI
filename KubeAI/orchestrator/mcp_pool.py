@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import copy
+import re
 import threading
 from dataclasses import dataclass
 from typing import Iterable
+
+
+_TOKEN_PATTERN = re.compile(r"[a-z0-9_]+")
 
 
 @dataclass
@@ -16,6 +20,7 @@ class MCPServer:
     endpoint: str
     capabilities: frozenset[str]
     healthy: bool = True
+    description: str = ""
 
     def __repr__(self) -> str:
         caps = ", ".join(sorted(self.capabilities))
@@ -59,6 +64,7 @@ class MCPPool:
         required_capabilities: Iterable[str],
         *,
         require_healthy: bool = True,
+        task: str = "",
     ) -> list[MCPServer]:
         """
         Return the minimal list of MCP servers that collectively cover all
@@ -90,13 +96,15 @@ class MCPPool:
             full_pool = list(self._servers.values())
 
         primary = healthy_pool if require_healthy else full_pool
-        return self._greedy_cover(needed, primary, full_pool)
+        return self._greedy_cover(needed, primary, full_pool, task=task)
 
     @staticmethod
     def _greedy_cover(
         needed: set[str],
         candidates: list[MCPServer],
         fallback_pool: list[MCPServer],
+        *,
+        task: str,
     ) -> list[MCPServer]:
         """Greedy set-cover returning the minimal server list for *needed*."""
         selected: list[MCPServer] = []
@@ -106,14 +114,22 @@ class MCPPool:
             # Pick best from primary candidates first
             best = max(
                 (s for s in candidates if s not in selected),
-                key=lambda s: len(s.capabilities & remaining),
+                key=lambda s: (
+                    len(s.capabilities & remaining),
+                    MCPPool._text_overlap(task, f"{s.server_id} {s.description}"),
+                    s.server_id,
+                ),
                 default=None,
             )
             if best is None or not (best.capabilities & remaining):
                 # Primary exhausted — fall back to full pool (may include unhealthy)
                 best = max(
                     (s for s in fallback_pool if s not in selected),
-                    key=lambda s: len(s.capabilities & remaining),
+                    key=lambda s: (
+                        len(s.capabilities & remaining),
+                        MCPPool._text_overlap(task, f"{s.server_id} {s.description}"),
+                        s.server_id,
+                    ),
                     default=None,
                 )
                 if best is None or not (best.capabilities & remaining):
@@ -124,6 +140,18 @@ class MCPPool:
             remaining -= best.capabilities
 
         return selected
+
+    @staticmethod
+    def _text_overlap(task: str, description: str) -> float:
+        if not task.strip() or not description.strip():
+            return 0.0
+
+        task_tokens = set(_TOKEN_PATTERN.findall(task.lower()))
+        desc_tokens = set(_TOKEN_PATTERN.findall(description.lower()))
+        if not task_tokens or not desc_tokens:
+            return 0.0
+
+        return float(len(task_tokens.intersection(desc_tokens)))
 
     def list_servers(self) -> list[MCPServer]:
         """Return a snapshot of all registered MCP servers."""

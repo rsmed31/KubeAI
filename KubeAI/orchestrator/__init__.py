@@ -16,6 +16,12 @@ from .orchestrator import (
     SpawnAgentFn,
     StatusCallback,
 )
+from .pool_loader import (
+    PoolBundle,
+    PoolConfigError,
+    load_assignment_policy_from_json,
+    load_pools_from_json,
+)
 
 __all__ = [
     "LLMPool",
@@ -41,4 +47,8 @@ __all__ = [
     "DocumentRunResult",
     "StatusCallback",
     "SpawnAgentFn",
+    "PoolBundle",
+    "PoolConfigError",
+    "load_pools_from_json",
+    "load_assignment_policy_from_json",
 ]

@@ -132,3 +132,21 @@ class TestSelect:
         result = pool.select(caps)
         covered = set().union(*(s.capabilities for s in result))
         assert set(caps).issubset(covered)
+
+    def test_task_description_prefers_matching_server_on_tie(self) -> None:
+        web_research = MCPServer(
+            "research-search",
+            "http://research:8080",
+            frozenset(["search"]),
+            description="web research internet sources",
+        )
+        code_search = MCPServer(
+            "code-search",
+            "http://code-search:8080",
+            frozenset(["search"]),
+            description="source code repositories and symbols",
+        )
+        pool = _pool(web_research, code_search)
+
+        result = pool.select(["search"], task="search internet research papers")
+        assert result[0].server_id == "research-search"

@@ -8,12 +8,19 @@ from KubeAI.orchestrator.a2a_pool import A2AAgentCard, A2APool
 from KubeAI.orchestrator.a2a_router import A2ARouter
 
 
-def _card(agent_id: str, *capabilities: str, load: float = 0.0, healthy: bool = True) -> A2AAgentCard:
+def _card(
+    agent_id: str,
+    *capabilities: str,
+    load: float = 0.0,
+    healthy: bool = True,
+    description: str = "",
+) -> A2AAgentCard:
     return A2AAgentCard(
         agent_id=agent_id,
         name=agent_id,
         endpoint=f"http://localhost/{agent_id}",
         capabilities=frozenset(capabilities),
+        description=description,
         load=load,
         healthy=healthy,
     )
@@ -57,6 +64,31 @@ class TestA2APool:
             preferred_agent_id="agent-a",
         )
         assert chosen.agent_id == "agent-a"
+
+    def test_select_prefers_description_match_on_tie(self) -> None:
+        pool = A2APool()
+        pool.register(
+            _card(
+                "agent-legal",
+                "rag_retrieval",
+                load=0.2,
+                description="legal contract review specialist",
+            )
+        )
+        pool.register(
+            _card(
+                "agent-general",
+                "rag_retrieval",
+                load=0.2,
+                description="general purpose assistant",
+            )
+        )
+
+        chosen = pool.select(
+            required_capabilities=["rag_retrieval"],
+            task="review this legal contract",
+        )
+        assert chosen.agent_id == "agent-legal"
 
 
 class TestA2ARouter:

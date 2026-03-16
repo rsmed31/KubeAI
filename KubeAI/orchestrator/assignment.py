@@ -57,6 +57,7 @@ class AssignmentPolicy:
         blueprint_tier: ModelTier = ModelTier.FAST,
         required_capabilities: Iterable[str] = (),
         cost_hint: float = 0.5,
+        task: str = "",
     ) -> Assignment:
         """
         Produce a complete spawn-time assignment.
@@ -66,6 +67,8 @@ class AssignmentPolicy:
             required_capabilities: MCP capability tags the task needs.
             cost_hint: Float 0.0 (cheapest/simplest) to 1.0 (most capable)
                        signalling task complexity for LLM tier selection.
+            task: Optional task text used to prefer pool entries whose
+                descriptions semantically match the workload.
 
         Returns:
             An immutable Assignment with selected model metadata and MCP list.
@@ -77,8 +80,12 @@ class AssignmentPolicy:
         model: ModelEntry = self._llm.select(
             minimum_tier=blueprint_tier,
             cost_hint=cost_hint,
+            task=task,
         )
-        mcps: list[MCPServer] = self._mcp.select(required_capabilities)
+        mcps: list[MCPServer] = self._mcp.select(
+            required_capabilities,
+            task=task,
+        )
         return Assignment(
             model_id=model.model_id,
             provider=model.provider,
