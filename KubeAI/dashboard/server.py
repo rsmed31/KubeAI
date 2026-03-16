@@ -1,4 +1,7 @@
 """KubeAI Dashboard server — the kubectl-proxy analogue for serving the control-plane UI."""
+
+from __future__ import annotations
+
 import asyncio
 import json
 import pathlib
@@ -6,28 +9,61 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 
-from .state import RuntimeState
-from .ws_manager import manager
-from .api import overview, agents, tasks, memory, blueprints, monitoring
+from KubeAI.dashboard.deps import get_control_plane, seed_demo_data
+from KubeAI.dashboard.ws_manager import manager
+from KubeAI.dashboard.api import overview, agents, tasks, memory, blueprints, monitoring
 
 BASE = pathlib.Path(__file__).parent
 
 
+def _make_ws_payload(cp) -> dict:
+    """Build a WebSocket state snapshot from ControlPlaneAPI."""
+    agents_list = cp.list_agents()
+    tasks_list = cp.list_tasks(limit=200)
+    return {
+        "agents": [
+            {
+                "id": a.agent_id,
+                "blueprint": a.metadata.get("blueprint", a.name),
+                "state": a.state.upper(),
+                "model_id": a.metadata.get("model", "unknown"),
+                "tier": a.metadata.get("tier", "unknown"),
+                "load": a.load,
+                "healthy": a.healthy,
+                "mcp_servers": list(a.capabilities),
+            }
+            for a in agents_list
+        ],
+        "tasks": [
+            {
+                "id": t.task_id,
+                "status": t.status.upper(),
+                "blueprint": t.blueprint,
+                "agent_id": t.agent_id,
+                "latency_ms": t.latency_ms,
+            }
+            for t in tasks_list
+        ],
+        "metrics": cp.metrics_snapshot(),
+    }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Manage the background broadcast loop lifecycle.
+    """Manage startup seeding and background broadcast loop lifecycle.
 
     Analogous to the kube-controller-manager's reconciliation loop —
-    periodically pushes updated state to all connected dashboard clients.
+    seeds demo state on startup then periodically pushes updated state
+    to all connected dashboard clients.
     """
+    cp = get_control_plane()
+    seed_demo_data(cp)
+
     async def _push_loop() -> None:
-        state = RuntimeState()
         while True:
             await asyncio.sleep(2)
-            await manager.broadcast({"type": "state_update", "data": state.snapshot()})
+            await manager.broadcast({"type": "state_update", "data": _make_ws_payload(cp)})
 
     task = asyncio.create_task(_push_loop())
     yield
@@ -52,8 +88,8 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     receive live state updates from the KubeAI control plane.
     """
     await manager.connect(ws)
-    state = RuntimeState()
-    await ws.send_text(json.dumps({"type": "state_update", "data": state.snapshot()}))
+    cp = get_control_plane()
+    await ws.send_text(json.dumps({"type": "state_update", "data": _make_ws_payload(cp)}))
     try:
         while True:
             await ws.receive_text()
@@ -63,6 +99,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 
 static_dir = BASE / "static"
 if static_dir.exists():
+    from fastapi.staticfiles import StaticFiles
     app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
 
 

@@ -262,6 +262,75 @@ class ControlPlaneAPI:
             "latest_event_id": self._events.latest_event_id(),
         }
 
+    def submit_task(
+        self,
+        description: str,
+        blueprint: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a new queued task record and emit a task.submitted event."""
+        import uuid
+
+        task_id = f"task-{uuid.uuid4().hex[:12]}"
+        timestamp = time.time()
+        record = TaskRecord(
+            task_id=task_id,
+            blueprint=blueprint or "unknown",
+            status="queued",
+            latency_ms=0.0,
+            token_cost=0.0,
+            eval_score=None,
+            agent_id=None,
+            timestamp=timestamp,
+        )
+        with self._lock:
+            self._tasks[task_id] = record
+
+        self._events.publish(
+            "task.submitted",
+            {"task_id": task_id, "blueprint": record.blueprint, "description": description[:200]},
+        )
+        return {
+            "task_id": task_id,
+            "blueprint": record.blueprint,
+            "status": record.status,
+            "description": description,
+            "timestamp": timestamp,
+        }
+
+    def terminate_agent(self, agent_id: str) -> bool:
+        """Mark an agent as terminated. Returns False if agent not found."""
+        with self._lock:
+            if agent_id not in self._agents:
+                return False
+        self.update_agent_state(agent_id, state="terminated", healthy=False)
+        return True
+
+    def overview(self) -> dict[str, Any]:
+        """Alias for get_overview() — consistent naming for route handlers."""
+        return self.get_overview()
+
+    def memory_snapshot(self) -> dict[str, Any]:
+        """Return a 3-tier memory utilization snapshot derived from registered agents."""
+        with self._lock:
+            agent_count = len(self._agents)
+            task_count = len(self._tasks)
+        return {
+            "working": {
+                "agent_contexts": agent_count,
+                "size_bytes": agent_count * 2048,
+            },
+            "short_term": {
+                "keys": max(agent_count * 8, task_count),
+                "ttl_avg_s": 600,
+                "size_bytes": max(agent_count * 8, task_count) * 512,
+            },
+            "long_term": {
+                "blueprints": 4,
+                "fact_entries": task_count * 3,
+                "size_bytes": max(524288, task_count * 1024),
+            },
+        }
+
     def metrics_snapshot(self) -> dict[str, list[dict[str, object]]]:
         """Return full metrics snapshot."""
         return self._metrics.snapshot()

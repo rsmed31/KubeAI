@@ -1,7 +1,12 @@
 """Tasks API — the kubectl apply Job / kubectl get jobs analogue for task submission and tracking."""
-from fastapi import APIRouter
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from ..state import RuntimeState
+
+from KubeAI.api.control_plane import ControlPlaneAPI
+from KubeAI.dashboard.deps import get_control_plane
 
 router = APIRouter()
 
@@ -17,23 +22,35 @@ class TaskSubmitRequest(BaseModel):
 
 
 @router.get("/tasks")
-def list_tasks() -> list[dict]:
+def list_tasks(cp: ControlPlaneAPI = Depends(get_control_plane)) -> list[dict]:
     """List all tasks in the cluster.
 
     Analogous to 'kubectl get jobs' — returns the full task history including
     queued, running, completed, and failed tasks.
     """
-    state = RuntimeState()
-    return state.snapshot()["tasks"]
+    return [
+        {
+            "id": t.task_id,
+            "description": t.task_id,   # description not stored in TaskRecord; use id as proxy
+            "status": t.status.upper(),
+            "blueprint": t.blueprint,
+            "agent_id": t.agent_id,
+            "latency_ms": t.latency_ms,
+            "eval_score": t.eval_score,
+            "timestamp": t.timestamp,
+        }
+        for t in cp.list_tasks(limit=200)
+    ]
 
 
 @router.post("/tasks/submit")
-def submit_task(body: TaskSubmitRequest) -> dict:
+def submit_task(
+    body: TaskSubmitRequest,
+    cp: ControlPlaneAPI = Depends(get_control_plane),
+) -> dict:
     """Submit a new task to the KubeAI scheduler.
 
     Analogous to 'kubectl apply -f job.yaml' — creates a new Task record,
     queues it for routing, and returns the initial task state.
     """
-    state = RuntimeState()
-    rec = state.add_task(description=body.description, blueprint=body.blueprint)
-    return vars(rec)
+    return cp.submit_task(description=body.description, blueprint=body.blueprint)
