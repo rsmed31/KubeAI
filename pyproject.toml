@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kubeai"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic",
+    "pyyaml",
+    "numpy",
+    "rank-bm25",
+    "click",
+]
+
+[project.optional-dependencies]
+reranking = ["sentence-transformers"]
+dev = ["pytest", "pytest-cov"]
+
+[project.scripts]
+agentctl = "KubeAI.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["KubeAI*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
