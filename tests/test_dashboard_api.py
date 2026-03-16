@@ -3,14 +3,37 @@
 Analogous to Kubernetes API conformance tests — verifies that every control-plane
 endpoint returns the expected shape and HTTP status codes.
 """
+import uuid
+
 import pytest
 from fastapi.testclient import TestClient
 
+from KubeAI.api.control_plane import AgentRecord
 from KubeAI.dashboard.server import app
-from KubeAI.dashboard.deps import get_control_plane, seed_demo_data
+from KubeAI.dashboard.deps import get_control_plane
 
-# Seed the singleton before any test so agent/task lists are non-empty.
-seed_demo_data(get_control_plane())
+# Seed minimal test data so agent/task lists are non-empty.
+cp = get_control_plane()
+_agent_id = f"agent-{uuid.uuid4().hex[:8]}"
+cp._agents[_agent_id] = AgentRecord(  # noqa: SLF001
+    agent_id=_agent_id,
+    name="test-agent",
+    description="Test agent for dashboard API tests",
+    state="running",
+    healthy=True,
+    load=0.1,
+    capabilities=("web_search",),
+    metadata={"blueprint": "research_agent", "model": "claude-haiku-4-5-20251001", "tier": "fast"},
+)
+cp.record_task_result(
+    task_id=f"task-{uuid.uuid4().hex[:8]}",
+    blueprint="research_agent",
+    status="complete",
+    latency_ms=1200.0,
+    token_cost=0.005,
+    eval_score=0.90,
+    agent_id=_agent_id,
+)
 
 client = TestClient(app)
 

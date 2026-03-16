@@ -1,12 +1,22 @@
-"""TaskWorker connects the ControlPlaneAPI task queue to Orchestrator routing, AgentExecutor execution, and result recording."""
+"""TaskWorker connects the ControlPlaneAPI task queue to Orchestrator routing, AgentExecutor execution, and result recording.
+
+Phase 4 additions:
+- TaskIntent analysis: detect URLs, data size, keyword signals
+- Dynamic template selection: RAG for large docs, scraper for URLs
+- Stage event emission: granular QUEUED → ROUTING → PROBING → EXECUTING → COMPLETE
+- result_text stored back on TaskRecord
+"""
 
 from __future__ import annotations
 
+import re
 import threading
 import time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from KubeAI.executor.agent_executor import AgentExecutor
+from KubeAI.orchestrator.document_probe import DocumentProbe
 
 if TYPE_CHECKING:
     from KubeAI.api.control_plane import ControlPlaneAPI
@@ -14,6 +24,22 @@ if TYPE_CHECKING:
     from KubeAI.memory.shared_memory import SharedMemory
     from KubeAI.orchestrator.orchestrator import Orchestrator
     from KubeAI.scheduler.lifecycle import AgentLifecycleManager
+    from KubeAI.templates.base import Template
+
+_URL_PATTERN = re.compile(r'https?://\S+')
+
+
+@dataclass
+class TaskIntent:
+    """Structured analysis of what a task needs."""
+
+    has_data: bool = False
+    data_size: int = 0
+    needs_rag: bool = False
+    needs_chunking: bool = False
+    needs_scraping: bool = False
+    urls_to_scrape: list[str] = field(default_factory=list)
+    inferred_capabilities: list[str] = field(default_factory=list)
 
 
 class TaskWorker:
@@ -21,7 +47,8 @@ class TaskWorker:
     Background worker that dequeues submitted tasks and runs them end-to-end.
 
     Control flow:
-      ControlPlaneAPI._task_queue → route blueprint → assign model →
+      ControlPlaneAPI._task_queue → intent analysis → route blueprint →
+      assign model → scrape/probe data → select templates →
       get_or_spawn agent → AgentExecutor.run() → record_task_result()
 
     Analogous to a Kubernetes controller reconciliation loop — runs as a
@@ -43,6 +70,7 @@ class TaskWorker:
         self._registry = registry
         self._memory = memory
         self._executor = AgentExecutor()
+        self._probe = DocumentProbe()
         self._num_workers = num_workers
         self._threads: list[threading.Thread] = []
 
@@ -68,9 +96,9 @@ class TaskWorker:
                 continue
             try:
                 self._process_task(task_info)
-            except Exception:
-                # Record failure to prevent queue stall; best-effort
+            except Exception as exc:
                 task_id = task_info.get("task_id", "unknown")
+                self._cp.update_task_stage(task_id, "failed", f"Task failed: {exc}")
                 try:
                     self._cp.record_task_result(
                         task_id=task_id,
@@ -87,18 +115,107 @@ class TaskWorker:
                 except Exception:
                     pass
 
+    def _analyze_task_intent(
+        self,
+        description: str,
+        data: str | None,
+        data_url: str | None,
+    ) -> TaskIntent:
+        """Analyze task text and data to determine what processing is needed."""
+        intent = TaskIntent()
+
+        # URL detection in description
+        urls = _URL_PATTERN.findall(description)
+        if data_url:
+            urls.append(data_url)
+        if urls:
+            intent.urls_to_scrape = urls
+            intent.needs_scraping = True
+
+        # Data size analysis
+        if data:
+            intent.has_data = True
+            intent.data_size = len(data)
+            intent.needs_rag = len(data) > 2000    # >2KB → use RAG
+            intent.needs_chunking = len(data) > 10_000  # >10KB → chunk + vector
+
+        # Keyword-based capability inference from DocumentProbe
+        intent.inferred_capabilities = DocumentProbe.infer_capabilities(description)
+
+        return intent
+
+    def _select_templates(
+        self,
+        description: str,
+        data: str | None,
+        data_url: str | None,
+        intent: TaskIntent,
+    ) -> tuple[list["Template"], str]:
+        """
+        Select and prepare templates based on task intent.
+
+        Returns (templates, augmented_task) where augmented_task may have
+        small documents injected directly into the prompt.
+        """
+        templates: list["Template"] = []
+        augmented_task = description
+
+        # Handle URL scraping
+        if intent.needs_scraping and intent.urls_to_scrape:
+            try:
+                from KubeAI.scraper.pipeline import RAGScraper
+                from KubeAI.templates.rag.basic import BasicRAG
+                scraper = RAGScraper(chunk_size=400, overlap=40)
+                rag = BasicRAG()
+                total_chunks = scraper.scrape_and_load(intent.urls_to_scrape, rag)
+                if total_chunks > 0:
+                    templates.append(rag)
+            except Exception:
+                # Scraping failed — continue without RAG
+                pass
+
+        # Handle uploaded data
+        if data:
+            if intent.needs_chunking:
+                # Large doc → chunk into BasicRAG
+                try:
+                    from KubeAI.scraper.chunker import chunk_texts
+                    from KubeAI.templates.rag.basic import BasicRAG
+                    rag = BasicRAG()
+                    chunks = chunk_texts([data], chunk_size=500, overlap=50)
+                    rag.add_documents(chunks)
+                    templates.append(rag)
+                except Exception:
+                    # Fall through to direct injection
+                    augmented_task = f"{description}\n\nDocument:\n{data[:8000]}"
+            elif intent.needs_rag:
+                # Medium doc → inject as context
+                augmented_task = f"{description}\n\nDocument:\n{data}"
+            else:
+                # Small doc → inject inline
+                augmented_task = f"{description}\n\nContext:\n{data}"
+
+        return templates, augmented_task
+
     def _process_task(self, task_info: dict) -> None:
-        """Route, assign, spawn, execute, and record a single task."""
+        """Route, analyze, assign, spawn, execute, and record a single task."""
         task_id: str = task_info["task_id"]
         description: str = task_info.get("description", "")
         preferred_blueprint_name: str | None = task_info.get("blueprint")
+        data: str | None = task_info.get("data")
+        data_url: str | None = task_info.get("data_url")
 
-        # ── 1. Route to blueprint ─────────────────────────────────────────
+        # ── Stage: ROUTING ────────────────────────────────────────────────
+        self._cp.update_task_stage(task_id, "routing", "Analyzing task and routing to blueprint")
+
+        # ── 1. Analyze intent ─────────────────────────────────────────────
+        intent = self._analyze_task_intent(description, data, data_url)
+
+        # ── 2. Route to blueprint ─────────────────────────────────────────
         blueprints = self._registry.list_blueprints()
         if not blueprints:
             raise RuntimeError("No blueprints registered — cannot route task")
 
-        # Honour explicit blueprint preference if valid
         blueprint: "Blueprint | None" = None
         if preferred_blueprint_name and preferred_blueprint_name != "unknown":
             try:
@@ -114,10 +231,17 @@ class TaskWorker:
         else:
             routing_latency_ms = 0.0
 
-        # ── 2. Assign model + MCPs ────────────────────────────────────────
+        # ── 3. Assign model + MCPs ────────────────────────────────────────
         assignment = self._orchestrator.assign(blueprint, task=description)
 
-        # ── 3. Record routing decision (Gap 5) ───────────────────────────
+        self._cp.update_task_stage(
+            task_id, "assigned",
+            f"Assigned to blueprint={blueprint.name}, model={assignment.model_id}",
+            blueprint=blueprint.name,
+            model_id=assignment.model_id,
+            confidence=confidence,
+        )
+
         self._cp.record_routing_decision(
             task_id=task_id,
             blueprint=blueprint.name,
@@ -128,17 +252,53 @@ class TaskWorker:
             latency_ms=routing_latency_ms,
         )
 
+        # ── Stage: DATA PROBING ───────────────────────────────────────────
+        if intent.has_data or intent.needs_scraping:
+            self._cp.update_task_stage(
+                task_id, "data_probing",
+                f"Probing task data: size={intent.data_size}B, "
+                f"needs_rag={intent.needs_rag}, scraping={intent.needs_scraping}, "
+                f"urls={len(intent.urls_to_scrape)}",
+                data_size=intent.data_size,
+                needs_scraping=intent.needs_scraping,
+                url_count=len(intent.urls_to_scrape),
+            )
+
+        # ── Stage: SCRAPING / RAG LOADING ─────────────────────────────────
+        if intent.needs_scraping:
+            self._cp.update_task_stage(
+                task_id, "scraping",
+                f"Scraping {len(intent.urls_to_scrape)} URL(s)",
+                urls=intent.urls_to_scrape[:3],
+            )
+
+        templates, augmented_task = self._select_templates(description, data, data_url, intent)
+
+        if templates:
+            self._cp.update_task_stage(
+                task_id, "rag_loaded",
+                f"Loaded {len(templates)} template(s) for context enrichment",
+                template_count=len(templates),
+            )
+
         # ── 4. Get or spawn an agent ──────────────────────────────────────
         agent = self._lifecycle.get_or_spawn(blueprint)
 
+        # ── Stage: EXECUTING ──────────────────────────────────────────────
+        self._cp.update_task_stage(
+            task_id, "executing",
+            f"Executing task on agent {agent.agent_id}",
+            agent_id=agent.agent_id,
+        )
+
         # ── 5. Execute via LiteLLM ────────────────────────────────────────
-        t0 = time.monotonic()
         result = self._executor.run(
-            task=description,
+            task=augmented_task,
             blueprint=blueprint,
             assignment=assignment,
             memory=self._memory,
             agent_id=agent.agent_id,
+            templates=templates if templates else None,
         )
 
         # ── 6. Update agent state and record result ───────────────────────
@@ -152,6 +312,20 @@ class TaskWorker:
             latency_ms=result.latency_ms,
             token_cost=result.token_cost,
             agent_id=agent.agent_id,
+        )
+
+        # Store result_text on the task record
+        try:
+            self._cp.update_task_result_text(task_id, result.text)
+        except Exception:
+            pass
+
+        # ── Stage: COMPLETE ───────────────────────────────────────────────
+        self._cp.update_task_stage(
+            task_id, "complete",
+            f"Task completed in {result.latency_ms:.0f}ms",
+            latency_ms=result.latency_ms,
+            token_cost=result.token_cost,
         )
 
         # Store result text in shared memory for CLI polling

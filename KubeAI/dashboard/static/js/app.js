@@ -12,6 +12,8 @@ const AppState = {
   overview: {},
   blueprints: [],
   memory: {},
+  pool_models: [],
+  lastState: {},
   _currentPage: null,
 };
 
@@ -23,6 +25,7 @@ const routes = {
   '#memory': () => MemoryPage.render(AppState),
   '#blueprints': () => BlueprintsPage.render(AppState),
   '#monitoring': () => MonitoringPage.render(AppState),
+  '#pools': () => PoolsPage.render(AppState),
 };
 
 function navigate(hash) {
@@ -47,6 +50,8 @@ function handleMessage(msg) {
   if (data.tasks !== undefined) AppState.tasks = data.tasks;
   if (data.metrics !== undefined) AppState.metrics = data.metrics;
   if (data.overview !== undefined) AppState.overview = data.overview;
+  if (data.pool_models !== undefined) AppState.pool_models = data.pool_models;
+  AppState.lastState = data;
 
   // Re-render current page with updated state
   if (AppState._currentPage) {

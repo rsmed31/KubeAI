@@ -11,7 +11,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from KubeAI.api.state_store import StateStore
-from KubeAI.dashboard.deps import get_control_plane, seed_demo_data
+from KubeAI.dashboard.deps import bootstrap_runtime, get_control_plane
 from KubeAI.dashboard.ws_manager import manager
 from KubeAI.dashboard.api import overview, agents, tasks, memory, blueprints, monitoring
 
@@ -22,6 +22,21 @@ def _make_ws_payload(cp) -> dict:
     """Build a WebSocket state snapshot from ControlPlaneAPI."""
     agents_list = cp.list_agents()
     tasks_list = cp.list_tasks(limit=200)
+
+    # Collect pool info if available
+    pool_models = []
+    llm_pool = getattr(cp, "_llm_pool", None)
+    if llm_pool is not None:
+        for m in llm_pool.list_models():
+            pool_models.append({
+                "model_id": m.model_id,
+                "provider": m.provider,
+                "tier": m.tier.value,
+                "load": m.load,
+                "healthy": m.healthy,
+                "cost_per_1k": m.cost_per_1k_tokens,
+            })
+
     return {
         "agents": [
             {
@@ -39,29 +54,33 @@ def _make_ws_payload(cp) -> dict:
         "tasks": [
             {
                 "id": t.task_id,
+                "description": t.description,
                 "status": t.status.upper(),
                 "blueprint": t.blueprint,
                 "agent_id": t.agent_id,
                 "latency_ms": t.latency_ms,
+                "result_text": t.result_text,
+                "stages": cp._task_stages.get(t.task_id, []),  # noqa: SLF001
             }
             for t in tasks_list
         ],
         "metrics": cp.metrics_snapshot(),
+        "pool_models": pool_models,
     }
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Manage startup seeding and background broadcast loop lifecycle.
+    """Manage startup wiring and background broadcast loop.
 
-    Analogous to the kube-controller-manager's reconciliation loop —
-    seeds demo state on startup then periodically pushes updated state
-    to all connected dashboard clients.
+    Bootstraps the full runtime on startup (NO demo data),
+    loads persisted state, then periodically pushes live state
+    to all connected dashboard clients via WebSocket.
     """
-    cp = get_control_plane()
+    runtime = bootstrap_runtime()
+    cp = runtime.control_plane
     state_store = StateStore()
     state_store.load(cp)
-    seed_demo_data(cp)
     state_store.start_periodic_checkpoint(cp)
 
     async def _push_loop() -> None:
@@ -83,14 +102,14 @@ app.include_router(memory.router, prefix="/api")
 app.include_router(blueprints.router, prefix="/api")
 app.include_router(monitoring.router, prefix="/api")
 
+# ── Cluster API router ─────────────────────────────────────────────────────
+from KubeAI.dashboard.api import cluster as cluster_api
+app.include_router(cluster_api.router, prefix="/api")
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket) -> None:
-    """WebSocket endpoint for real-time dashboard state streaming.
-
-    Analogous to 'kubectl get pods --watch' — clients connect here and
-    receive live state updates from the KubeAI control plane.
-    """
+    """WebSocket endpoint for real-time dashboard state streaming."""
     await manager.connect(ws)
     cp = get_control_plane()
     await ws.send_text(json.dumps({"type": "state_update", "data": _make_ws_payload(cp)}))
@@ -108,10 +127,6 @@ if static_dir.exists():
 
 
 def serve(host: str = "0.0.0.0", port: int = 8080) -> None:
-    """Start the KubeAI dashboard server.
-
-    Analogous to 'kubectl proxy' — starts a local server providing access
-    to the KubeAI control-plane API and dashboard UI.
-    """
+    """Start the KubeAI dashboard server."""
     import uvicorn
     uvicorn.run(app, host=host, port=port)

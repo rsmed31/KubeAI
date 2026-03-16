@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from KubeAI.blueprint import Blueprint
     from KubeAI.memory.shared_memory import SharedMemory
     from KubeAI.orchestrator.assignment import Assignment
+    from KubeAI.templates.base import Template
 
 
 @dataclass
@@ -50,6 +52,7 @@ class AgentExecutor:
         assignment: "Assignment",
         memory: "SharedMemory | None" = None,
         agent_id: str | None = None,
+        templates: "list[Template] | None" = None,
     ) -> AgentResult:
         """
         Execute *task* using the model specified in *assignment*.
@@ -60,6 +63,8 @@ class AgentExecutor:
             assignment: The spawn-time assignment selecting the model.
             memory: Optional SharedMemory for reading working context.
             agent_id: Optional agent ID used to load working-memory context.
+            templates: Optional list of Template objects to attach for pre/post hooks.
+                       Templates run pre_run() before LLM call and post_run() after.
 
         Returns:
             AgentResult with generated text, latency, and token cost.
@@ -88,6 +93,17 @@ class AgentExecutor:
         if context_lines:
             augmented_task = "\n".join(context_lines) + "\n\n" + task
 
+        # Apply template pre_run hooks (e.g. RAG context injection)
+        if templates:
+            from KubeAI.templates.base import attach_template, run_pre_hooks, run_post_hooks
+            agent_obj = SimpleNamespace()
+            for t in templates:
+                try:
+                    attach_template(agent_obj, t)
+                except Exception:
+                    pass  # Skip template failures — don't block execution
+            augmented_task = run_pre_hooks(agent_obj, augmented_task)
+
         messages = [
             {"role": "system", "content": system_content},
             {"role": "user", "content": augmented_task},
@@ -107,6 +123,18 @@ class AgentExecutor:
 
         latency_ms = (time.monotonic() - t0) * 1000
         result_text = response.choices[0].message.content or ""
+
+        # Apply template post_run hooks
+        if templates:
+            from KubeAI.templates.base import run_post_hooks
+            agent_obj_post = SimpleNamespace()
+            for t in templates:
+                try:
+                    from KubeAI.templates.base import attach_template
+                    attach_template(agent_obj_post, t)
+                except Exception:
+                    pass
+            result_text = run_post_hooks(agent_obj_post, result_text)
 
         usage = getattr(response, "usage", None)
         raw_usage: dict[str, Any] = {}

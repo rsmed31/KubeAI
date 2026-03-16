@@ -87,3 +87,14 @@ class BasicRAG(Template):
         if top_k <= 0:
             return []
         return [doc for doc, _ in self.retrieve_with_scores(query=query, top_k=top_k)]
+
+    def pre_run(self, task: str) -> str:
+        """Augment the task with top-k retrieved document chunks as context."""
+        if not self._documents:
+            return task
+        top_k = int(self._config.get("top_k", 3))
+        chunks = self.retrieve(task, top_k=top_k)
+        if not chunks:
+            return task
+        context = "\n\n---\n\n".join(chunks)
+        return f"{task}\n\n<retrieved_context>\n{context}\n</retrieved_context>"

@@ -40,6 +40,8 @@ class TaskRecord:
     eval_score: float | None
     agent_id: str | None = None
     timestamp: float = 0.0
+    description: str = ""        # NEW: task description text
+    result_text: str = ""        # NEW: result from executor
 
 
 class ControlPlaneAPI:
@@ -59,6 +61,7 @@ class ControlPlaneAPI:
         self._task_queue: queue.Queue[dict[str, Any]] = queue.Queue()
         # Routing decisions log for dashboard /monitoring and Gap 5 differentiation.
         self._routing_decisions: list[dict[str, Any]] = []
+        self._task_stages: dict[str, list[dict]] = {}
 
     def register_agent(self, card: "A2AAgentCard", *, state: str = "running") -> AgentRecord:
         """Register or update an agent record from an A2A card."""
@@ -160,6 +163,12 @@ class ControlPlaneAPI:
         """Record task completion and update monitoring metrics/events."""
         normalized_status = status.strip() or "unknown"
         timestamp = time.time()
+
+        # Preserve description from the originally submitted task record
+        with self._lock:
+            existing = self._tasks.get(task_id)
+        preserved_description = existing.description if existing is not None else ""
+
         record = TaskRecord(
             task_id=task_id,
             blueprint=blueprint,
@@ -169,6 +178,7 @@ class ControlPlaneAPI:
             eval_score=(float(eval_score) if eval_score is not None else None),
             agent_id=agent_id,
             timestamp=timestamp,
+            description=preserved_description,
         )
 
         with self._lock:
@@ -206,6 +216,25 @@ class ControlPlaneAPI:
             },
         )
         return record
+
+    def update_task_result_text(self, task_id: str, result_text: str) -> None:
+        """Update the result text on a completed task record."""
+        with self._lock:
+            existing = self._tasks.get(task_id)
+            if existing is None:
+                return
+            self._tasks[task_id] = TaskRecord(
+                task_id=existing.task_id,
+                blueprint=existing.blueprint,
+                status=existing.status,
+                latency_ms=existing.latency_ms,
+                token_cost=existing.token_cost,
+                eval_score=existing.eval_score,
+                agent_id=existing.agent_id,
+                timestamp=existing.timestamp,
+                description=existing.description,
+                result_text=result_text[:4000],
+            )
 
     def list_tasks(self, *, limit: int = 100) -> list[TaskRecord]:
         """Return most recent task records ordered by timestamp ascending."""
@@ -271,6 +300,8 @@ class ControlPlaneAPI:
         self,
         description: str,
         blueprint: str | None = None,
+        data: str | None = None,
+        data_url: str | None = None,
     ) -> dict[str, Any]:
         """Create a new queued task record and emit a task.submitted event."""
         import uuid
@@ -286,6 +317,7 @@ class ControlPlaneAPI:
             eval_score=None,
             agent_id=None,
             timestamp=timestamp,
+            description=description[:500],
         )
         with self._lock:
             self._tasks[task_id] = record
@@ -301,8 +333,15 @@ class ControlPlaneAPI:
             "description": description,
             "timestamp": timestamp,
         }
-        # Publish to the internal queue so TaskWorker can execute it.
-        self._task_queue.put(result)
+        queue_item = {
+            "task_id": task_id,
+            "blueprint": record.blueprint,
+            "description": description,
+            "timestamp": timestamp,
+            "data": data,
+            "data_url": data_url,
+        }
+        self._task_queue.put(queue_item)
         return result
 
     def record_routing_decision(
@@ -337,6 +376,30 @@ class ControlPlaneAPI:
             "KubeAI_routing_confidence",
             value=float(confidence),
             labels={"blueprint": blueprint},
+        )
+
+    def update_task_stage(
+        self,
+        task_id: str,
+        stage: str,
+        message: str,
+        **details,
+    ) -> None:
+        """Record a processing stage for a task and publish a stage event."""
+        entry = {
+            "stage": stage,
+            "message": message,
+            "timestamp": time.time(),
+            **details,
+        }
+        with self._lock:
+            self._task_stages.setdefault(task_id, []).append(entry)
+            # Bound memory: keep at most 50 stage entries per task
+            if len(self._task_stages[task_id]) > 50:
+                self._task_stages[task_id] = self._task_stages[task_id][-50:]
+        self._events.publish(
+            "task.stage_updated",
+            {"task_id": task_id, **entry},
         )
 
     def list_routing_decisions(self, *, limit: int = 100) -> list[dict[str, Any]]:

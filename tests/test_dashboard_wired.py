@@ -2,18 +2,32 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from fastapi.testclient import TestClient
 
+from KubeAI.api.control_plane import AgentRecord
 from KubeAI.dashboard.server import app
-from KubeAI.dashboard.deps import get_control_plane, seed_demo_data
+from KubeAI.dashboard.deps import get_control_plane
 
 
 @pytest.fixture(scope="module")
 def client() -> TestClient:
-    """TestClient with seeded control-plane data."""
+    """TestClient with minimal seeded control-plane data."""
     cp = get_control_plane()
-    seed_demo_data(cp)
+    # Seed one agent record so agent-dependent tests have data
+    agent_id = f"agent-{uuid.uuid4().hex[:8]}"
+    cp._agents[agent_id] = AgentRecord(  # noqa: SLF001
+        agent_id=agent_id,
+        name="wired-test-agent",
+        description="Test agent",
+        state="idle",
+        healthy=True,
+        load=0.0,
+        capabilities=(),
+        metadata={"blueprint": "general_agent", "model": "claude-haiku-4-5-20251001", "tier": "fast"},
+    )
     return TestClient(app)
 
 
