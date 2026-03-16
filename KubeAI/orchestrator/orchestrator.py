@@ -71,9 +71,8 @@ def _llm_score(task: str, blueprint: "Blueprint", model_id: str) -> float:
     """
     Default LLM-based scorer using LiteLLM.
 
-    Builds a prompt that asks the model to rate how well a blueprint matches a
-    task, then parses the single decimal response. Falls back to 0.0 on any
-    parse or API error.
+    Routing ALWAYS requires a real LLM call — no silent fallbacks. Raises if
+    litellm is not installed or if the API call fails.
 
     Args:
         task: The task description to score.
@@ -82,11 +81,17 @@ def _llm_score(task: str, blueprint: "Blueprint", model_id: str) -> float:
 
     Returns:
         A float in [0.0, 1.0].
+
+    Raises:
+        RuntimeError: If litellm is not installed.
+        Exception: If the LLM API call fails.
     """
     try:
         import litellm  # type: ignore[import]
     except ImportError:
-        return 0.0
+        raise RuntimeError(
+            "litellm is required for routing. Install it with: pip install litellm"
+        )
 
     prompt = (
         f"Score how well this agent blueprint matches the task. "
@@ -94,16 +99,18 @@ def _llm_score(task: str, blueprint: "Blueprint", model_id: str) -> float:
         f"Task: {task}. "
         f"Reply with only a decimal between 0.0 and 1.0."
     )
+    response = litellm.completion(
+        model=model_id,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=16,
+    )
+    raw = response.choices[0].message.content.strip()
     try:
-        response = litellm.completion(
-            model=model_id,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=16,
-        )
-        raw = response.choices[0].message.content.strip()
         return max(0.0, min(1.0, float(raw)))
-    except Exception:
-        return 0.0
+    except ValueError:
+        raise RuntimeError(
+            f"Routing LLM returned unparseable score: {raw!r}"
+        )
 
 
 def _llm_decompose(task: str, model_id: str, max_subtasks: int = 5) -> list[str]:

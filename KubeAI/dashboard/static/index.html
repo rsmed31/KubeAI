@@ -25,9 +25,9 @@
           </svg>
           <span class="logo-text">KubeAI</span>
         </div>
-        <div class="cluster-badge">
+        <div class="cluster-badge" id="topbar-cluster-badge" style="cursor:pointer;" onclick="location.hash='#clusters'" title="Click to manage clusters">
           <i data-lucide="server" class="icon-sm"></i>
-          <span>kubeai-cluster-1</span>
+          <span id="topbar-cluster-name">default</span>
         </div>
       </div>
       <div class="topbar-right">
@@ -45,6 +45,12 @@
     <div class="layout">
       <nav class="sidebar">
         <ul class="nav-list">
+          <li>
+            <a href="#clusters" class="nav-link" data-page="clusters">
+              <i data-lucide="server" class="nav-icon"></i>
+              <span>Clusters</span>
+            </a>
+          </li>
           <li>
             <a href="#overview" class="nav-link" data-page="overview">
               <i data-lucide="layout-dashboard" class="nav-icon"></i>
@@ -111,7 +117,7 @@
       <div class="statusbar-left">
         <span class="statusbar-item">
           <i data-lucide="layers" class="icon-xs"></i>
-          <span>context: kubeai-cluster-1</span>
+          <span>context: <span id="statusbar-cluster-name">default</span></span>
         </span>
         <span class="statusbar-divider">|</span>
         <span class="statusbar-item">
@@ -139,6 +145,7 @@
   <script src="/js/pages/memory.js"></script>
   <script src="/js/pages/blueprints.js"></script>
   <script src="/js/pages/monitoring.js"></script>
+  <script src="/js/pages/clusters.js"></script>
   <script src="/js/pages/pools.js"></script>
   <script src="/js/app.js"></script>
 </body>

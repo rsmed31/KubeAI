@@ -56,21 +56,20 @@ def _stub_litellm_raise() -> types.ModuleType:
 # ---------------------------------------------------------------------------
 
 
-def test_llm_score_returns_zero_when_litellm_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_llm_score must return 0.0 whenever litellm.completion raises."""
+def test_llm_score_raises_when_litellm_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_llm_score must propagate the exception when litellm.completion raises."""
     monkeypatch.setitem(sys.modules, "litellm", _stub_litellm_raise())
     bp = _make_blueprint()
-    result = _llm_score("some task", bp, "model-fast")
-    assert result == 0.0
+    with pytest.raises(Exception):
+        _llm_score("some task", bp, "model-fast")
 
 
-def test_llm_score_returns_zero_when_litellm_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_llm_score must return 0.0 when litellm is not installed (ImportError path)."""
-    # Remove litellm from sys.modules so the try/except ImportError triggers
+def test_llm_score_raises_when_litellm_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_llm_score must raise RuntimeError when litellm is not installed."""
     monkeypatch.setitem(sys.modules, "litellm", None)  # type: ignore[arg-type]
     bp = _make_blueprint()
-    result = _llm_score("some task", bp, "model-fast")
-    assert result == 0.0
+    with pytest.raises(RuntimeError, match="litellm is required for routing"):
+        _llm_score("some task", bp, "model-fast")
 
 
 # ---------------------------------------------------------------------------
@@ -103,33 +102,29 @@ def test_llm_decompose_returns_task_list_when_litellm_missing(
 # ---------------------------------------------------------------------------
 
 
-def test_orchestrator_route_does_not_crash_when_litellm_missing(
+def test_orchestrator_route_raises_when_litellm_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Orchestrator.route must not raise even when litellm is unavailable."""
+    """Orchestrator.route must raise when litellm is unavailable — no silent fallback."""
     monkeypatch.setitem(sys.modules, "litellm", None)  # type: ignore[arg-type]
     policy = _make_policy()
     orch = Orchestrator(policy)
     bp = _make_blueprint("research")
-    # _llm_score will return 0.0 for all blueprints — route still picks one
-    result_bp, score = orch.route("summarise a paper", [bp])
-    assert result_bp.name == "research"
-    assert score == 0.0
+    with pytest.raises(RuntimeError, match="litellm is required for routing"):
+        orch.route("summarise a paper", [bp])
 
 
-def test_orchestrator_route_does_not_crash_when_litellm_raises(
+def test_orchestrator_route_raises_when_litellm_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Orchestrator.route must not raise even when litellm.completion raises."""
+    """Orchestrator.route must propagate LLM API failures — no silent fallback."""
     monkeypatch.setitem(sys.modules, "litellm", _stub_litellm_raise())
     policy = _make_policy()
     orch = Orchestrator(policy)
     bp1 = _make_blueprint("coder")
     bp2 = _make_blueprint("writer")
-    result_bp, score = orch.route("write some code", [bp1, bp2])
-    # Both scored 0.0 → first by stable sort wins; either is valid
-    assert result_bp.name in {"coder", "writer"}
-    assert score == 0.0
+    with pytest.raises(Exception):
+        orch.route("write some code", [bp1, bp2])
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ def _make_ws_payload(cp) -> dict:
 
     # Collect pool info if available
     pool_models = []
+    pool_mcps = []
     llm_pool = getattr(cp, "_llm_pool", None)
     if llm_pool is not None:
         for m in llm_pool.list_models():
@@ -36,6 +37,27 @@ def _make_ws_payload(cp) -> dict:
                 "healthy": m.healthy,
                 "cost_per_1k": m.cost_per_1k_tokens,
             })
+    try:
+        from KubeAI.dashboard.deps import get_runtime
+        rt = get_runtime()
+        for s in rt.mcp_pool.list_servers():
+            pool_mcps.append({
+                "server_id": s.server_id,
+                "endpoint": s.endpoint,
+                "capabilities": sorted(s.capabilities),
+                "healthy": s.healthy,
+                "description": s.description,
+            })
+    except Exception:
+        pass
+
+    # Collect cluster snapshots
+    clusters_snapshot = []
+    try:
+        from KubeAI.dashboard.deps import get_cluster_registry
+        clusters_snapshot = get_cluster_registry().snapshot()
+    except Exception:
+        pass
 
     return {
         "agents": [
@@ -66,6 +88,8 @@ def _make_ws_payload(cp) -> dict:
         ],
         "metrics": cp.metrics_snapshot(),
         "pool_models": pool_models,
+        "pool_mcps": pool_mcps,
+        "clusters": clusters_snapshot,
     }
 
 
@@ -78,6 +102,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     to all connected dashboard clients via WebSocket.
     """
     runtime = bootstrap_runtime()
+    from KubeAI.dashboard.deps import get_cluster_registry
+    get_cluster_registry()  # initialise registry with default cluster
     cp = runtime.control_plane
     state_store = StateStore()
     state_store.load(cp)

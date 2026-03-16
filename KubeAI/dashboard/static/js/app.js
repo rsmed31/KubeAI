@@ -13,12 +13,16 @@ const AppState = {
   blueprints: [],
   memory: {},
   pool_models: [],
+  pool_mcps: [],
+  clusters: [],
+  activeCluster: 'default',
   lastState: {},
   _currentPage: null,
 };
 
 // ── Router ────────────────────────────────────────────────────────────────────
 const routes = {
+  '#clusters': () => ClustersPage.render(AppState),
   '#overview': () => OverviewPage.render(AppState),
   '#agents': () => AgentsPage.render(AppState),
   '#tasks': () => TasksPage.render(AppState),
@@ -51,6 +55,8 @@ function handleMessage(msg) {
   if (data.metrics !== undefined) AppState.metrics = data.metrics;
   if (data.overview !== undefined) AppState.overview = data.overview;
   if (data.pool_models !== undefined) AppState.pool_models = data.pool_models;
+  if (data.pool_mcps !== undefined) AppState.pool_mcps = data.pool_mcps;
+  if (data.clusters !== undefined) AppState.clusters = data.clusters;
   AppState.lastState = data;
 
   // Re-render current page with updated state
@@ -81,6 +87,25 @@ function updateLastUpdated() {
   if (el) {
     const now = new Date();
     el.textContent = `Last updated: ${now.toLocaleTimeString()}`;
+  }
+}
+
+function setActiveCluster(name) {
+  AppState.activeCluster = name;
+  updateClusterContext();
+}
+
+function updateClusterContext() {
+  const name = AppState.activeCluster || 'default';
+  const topbar = document.getElementById('topbar-cluster-name');
+  if (topbar) topbar.textContent = name;
+  const statusbar = document.getElementById('statusbar-cluster-name');
+  if (statusbar) statusbar.textContent = name;
+  // Highlight topbar badge when non-default cluster is active
+  const badge = document.getElementById('topbar-cluster-badge');
+  if (badge) {
+    badge.style.borderColor = name !== 'default' ? 'var(--accent-cyan)' : '';
+    badge.style.background = name !== 'default' ? 'rgba(6,182,212,0.1)' : '';
   }
 }
 

@@ -284,11 +284,18 @@ class TaskWorker:
         # ── 4. Get or spawn an agent ──────────────────────────────────────
         agent = self._lifecycle.get_or_spawn(blueprint)
 
-        # ── Stage: EXECUTING ──────────────────────────────────────────────
+        self._cp.update_task_stage(
+            task_id, "spawned",
+            f"Agent {agent.agent_id} spawned (blueprint={blueprint.name})",
+            agent_id=agent.agent_id,
+        )
+
+        # ── Stage: EXECUTING — fires immediately before LiteLLM call ──────
         self._cp.update_task_stage(
             task_id, "executing",
-            f"Executing task on agent {agent.agent_id}",
+            f"Calling LLM model={assignment.model_id} via LiteLLM",
             agent_id=agent.agent_id,
+            model_id=assignment.model_id,
         )
 
         # ── 5. Execute via LiteLLM ────────────────────────────────────────
