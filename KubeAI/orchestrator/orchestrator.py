@@ -2,18 +2,69 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
+from uuid import uuid4
 
 from .assignment import Assignment, AssignmentPolicy
+from .document_dispatch import DocumentDispatchResult, DocumentDispatcher
+from .document_probe import DocumentProbe, ProbedDocument
 
 if TYPE_CHECKING:
     from KubeAI.blueprint import Blueprint
+    from KubeAI.scheduler.module_policy import SchedulerModulePolicy
+
+from .a2a_pool import A2AAgentCard, A2APool
+
+_INTERNAL_ORCHESTRATION_CAPABILITIES = frozenset({"rag_retrieval"})
 
 # Type alias: (task, blueprint, model_id) → score 0.0-1.0
 ScoreFn = Callable[["Blueprint", str, str], float]
 
 # Type alias: (task, model_id) → list[str]
 DecomposeFn = Callable[[str, str], list[str]]
+
+# Type alias: status event callback used by long-running orchestration flows.
+StatusCallback = Callable[["RunStatusEvent"], None]
+
+# Type alias: spawn callback that returns the spawned agent id.
+SpawnAgentFn = Callable[["Blueprint", Assignment, dict[str, Any]], str]
+
+
+@dataclass(frozen=True)
+class RunStatusEvent:
+    """One status update emitted during document orchestration."""
+
+    stage: str
+    message: str
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        return (
+            f"RunStatusEvent(stage={self.stage!r}, message={self.message!r}, "
+            f"details={self.details!r})"
+        )
+
+
+@dataclass(frozen=True)
+class DocumentRunResult:
+    """Structured outcome for a document task routed and dispatched by the orchestrator."""
+
+    run_id: str
+    blueprint: "Blueprint"
+    assignment: Assignment
+    dispatch: DocumentDispatchResult
+    rag_template: str
+    agent_id: str
+    probe: ProbedDocument
+    events: tuple[RunStatusEvent, ...] = field(default_factory=tuple)
+
+    def __repr__(self) -> str:
+        return (
+            f"DocumentRunResult(run_id={self.run_id!r}, blueprint={self.blueprint.name!r}, "
+            f"agent_id={self.agent_id!r}, rag_template={self.rag_template!r}, "
+            f"events={len(self.events)})"
+        )
 
 
 def _llm_score(task: str, blueprint: "Blueprint", model_id: str) -> float:
@@ -114,6 +165,7 @@ class Orchestrator:
         policy: AssignmentPolicy,
         score_fn: ScoreFn | None = None,
         decompose_fn: DecomposeFn | None = None,
+        document_probe: DocumentProbe | None = None,
     ) -> None:
         """
         Initialise the Orchestrator.
@@ -126,12 +178,15 @@ class Orchestrator:
             decompose_fn: Optional injectable decomposer. Signature:
                           (task, model_id) → list[str].
                           Defaults to the Anthropic-based _llm_decompose.
+            document_probe: Optional document probe implementation used by
+                            direct-document dispatch flows.
         """
         self._policy = policy
         self._score_fn: ScoreFn = score_fn if score_fn is not None else _llm_score
         self._decompose_fn: DecomposeFn = (
             decompose_fn if decompose_fn is not None else _llm_decompose
         )
+        self._document_probe = document_probe or DocumentProbe()
 
     def route(
         self, task: str, blueprints: list["Blueprint"]
@@ -201,6 +256,223 @@ class Orchestrator:
             required_capabilities=blueprint.required_capabilities,
             cost_hint=cost_hint,
         )
+
+    def orchestrate_document_run(
+        self,
+        *,
+        task: str,
+        document: str,
+        blueprints: list["Blueprint"],
+        a2a_pool: A2APool,
+        spawn_agent_fn: SpawnAgentFn | None = None,
+        preferred_agent_id: str | None = None,
+        module_policy: "SchedulerModulePolicy | None" = None,
+        long_doc_token_threshold: int = 180,
+        status_callback: StatusCallback | None = None,
+    ) -> DocumentRunResult:
+        """
+        Probe a large document, decide routing, spawn/register a RAG-ready agent,
+        and dispatch the document directly while emitting run status events.
+
+        This is the "direct document path" requested by the architecture:
+        1. Read only a sample slice (DocumentProbe) to infer required capabilities.
+        2. Route to the right blueprint using semantic scoring.
+        3. Assign model and MCP attachments via AssignmentPolicy.
+        4. Spawn or select an A2A agent that is RAG-ready.
+        5. Dispatch the full document payload directly through DocumentDispatcher.
+
+        Args:
+            task: User task for the document.
+            document: Full document payload.
+            blueprints: Candidate blueprints to route against.
+            a2a_pool: A2A pool used for endpoint registration and dispatch.
+            spawn_agent_fn: Optional callback to spin an agent and return agent_id.
+            preferred_agent_id: Optional pre-existing target agent id.
+            module_policy: Optional scheduler module policy for dispatch guardrails.
+            long_doc_token_threshold: Token threshold above which scraper-style RAG
+                                      is selected for the spawned agent metadata.
+            status_callback: Optional callback invoked per run status event.
+
+        Returns:
+            DocumentRunResult containing assignment, dispatch metadata, and all
+            status events emitted during the run.
+        """
+        if not task.strip():
+            raise ValueError("task must not be empty")
+        if not document.strip():
+            raise ValueError("document must not be empty")
+        if not blueprints:
+            raise ValueError("blueprints list must not be empty")
+
+        run_id = f"run-{uuid4().hex[:12]}"
+        events: list[RunStatusEvent] = []
+
+        def _emit(stage: str, message: str, **details: Any) -> None:
+            event = RunStatusEvent(stage=stage, message=message, details=dict(details))
+            events.append(event)
+            if status_callback is not None:
+                status_callback(event)
+
+        full_document_estimated_tokens = self._document_probe.estimate_tokens(document)
+        probe = self._document_probe.probe(document)
+        _emit(
+            "probe_document",
+            "Probed document sample for capability and complexity signals.",
+            full_document_estimated_tokens=full_document_estimated_tokens,
+            estimated_tokens=probe.estimated_tokens,
+            cost_hint=probe.cost_hint,
+            required_capabilities=list(probe.required_capabilities),
+        )
+
+        route_task = f"{task}\n\nDocument preview:\n{probe.preview}"
+        blueprint, confidence = self.route(route_task, blueprints)
+        _emit(
+            "route_blueprint",
+            "Selected blueprint for document run.",
+            blueprint=blueprint.name,
+            confidence=confidence,
+        )
+
+        required_capabilities = set(blueprint.required_capabilities)
+        required_capabilities.update(probe.required_capabilities)
+        required_capabilities.update(_INTERNAL_ORCHESTRATION_CAPABILITIES)
+
+        # Internal orchestration tags (for agent/runtime routing) are not MCP tags.
+        mcp_required_capabilities = sorted(
+            capability
+            for capability in required_capabilities
+            if capability not in _INTERNAL_ORCHESTRATION_CAPABILITIES
+        )
+
+        assignment = self._policy.assign(
+            blueprint_tier=blueprint.tier,
+            required_capabilities=mcp_required_capabilities,
+            cost_hint=probe.cost_hint,
+        )
+        _emit(
+            "assign_resources",
+            "Assigned model and MCP attachments for spawn.",
+            model_id=assignment.model_id,
+            tier=assignment.tier.value,
+            mcp_servers=[server.server_id for server in assignment.mcp_servers],
+        )
+
+        rag_template = self._select_rag_template(
+            probe=probe,
+            document_token_estimate=full_document_estimated_tokens,
+            long_doc_token_threshold=long_doc_token_threshold,
+        )
+
+        mcp_capabilities = {
+            capability
+            for server in assignment.mcp_servers
+            for capability in server.capabilities
+        }
+        agent_capabilities = sorted(required_capabilities.union(mcp_capabilities))
+
+        spawned_agent_id = preferred_agent_id
+        spawn_metadata = {
+            "run_id": run_id,
+            "blueprint": blueprint.name,
+            "assignment": {
+                "model_id": assignment.model_id,
+                "provider": assignment.provider,
+                "tier": assignment.tier.value,
+                "mcp_servers": [server.server_id for server in assignment.mcp_servers],
+            },
+            "rag_template": rag_template,
+            "required_capabilities": agent_capabilities,
+            "probe": {
+                "estimated_tokens": probe.estimated_tokens,
+                "cost_hint": probe.cost_hint,
+            },
+        }
+
+        if spawn_agent_fn is not None:
+            spawned_agent_id = spawn_agent_fn(blueprint, assignment, spawn_metadata)
+
+        if spawned_agent_id is not None:
+            card = A2AAgentCard(
+                agent_id=spawned_agent_id,
+                name=f"{blueprint.name}-{spawned_agent_id}",
+                endpoint=f"http://localhost/agents/{spawned_agent_id}",
+                capabilities=frozenset(agent_capabilities),
+                metadata=spawn_metadata,
+            )
+            a2a_pool.register(card)
+            _emit(
+                "spawn_agent",
+                "Registered spawned agent in A2A pool for direct dispatch.",
+                agent_id=spawned_agent_id,
+                rag_template=rag_template,
+            )
+        else:
+            _emit(
+                "spawn_agent",
+                "No spawn callback provided; selecting from existing A2A pool.",
+                strategy="reuse",
+            )
+
+        dispatcher = DocumentDispatcher(
+            router=self._build_router(a2a_pool),
+            probe=self._document_probe,
+            module_policy=module_policy,
+        )
+
+        _emit(
+            "dispatch_document",
+            "Dispatching document to RAG-ready agent.",
+            preferred_agent_id=spawned_agent_id,
+            required_capabilities=agent_capabilities,
+        )
+        dispatch = dispatcher.dispatch(
+            task=task,
+            document=document,
+            preferred_agent_id=spawned_agent_id,
+            required_capabilities=agent_capabilities,
+            metadata={
+                **spawn_metadata,
+                "status_events": [event.stage for event in events],
+            },
+            probe_result=probe,
+        )
+
+        _emit(
+            "completed",
+            "Document run dispatched successfully.",
+            dispatch_id=dispatch.dispatch_id,
+            target_agent=dispatch.routed_task.target.agent_id,
+        )
+
+        return DocumentRunResult(
+            run_id=run_id,
+            blueprint=blueprint,
+            assignment=assignment,
+            dispatch=dispatch,
+            rag_template=rag_template,
+            agent_id=dispatch.routed_task.target.agent_id,
+            probe=probe,
+            events=tuple(events),
+        )
+
+    @staticmethod
+    def _build_router(a2a_pool: A2APool) -> Any:
+        from .a2a_router import A2ARouter
+
+        return A2ARouter(a2a_pool)
+
+    @staticmethod
+    def _select_rag_template(
+        *,
+        probe: ProbedDocument,
+        document_token_estimate: int,
+        long_doc_token_threshold: int,
+    ) -> str:
+        if document_token_estimate >= max(1, long_doc_token_threshold):
+            return "scraper"
+        if "knowledge_graph" in probe.required_capabilities:
+            return "knowledge_graph"
+        return "basic"
 
     def __repr__(self) -> str:
         return f"Orchestrator(policy={self._policy!r})"

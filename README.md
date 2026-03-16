@@ -168,7 +168,12 @@ python examples/demo.py
 agentctl run "Explain how transformers work"
 agentctl run "Write a Python binary search" --rag basic
 agentctl run "Summarize this doc" --rag reranking --memory summarizing
+agentctl blueprints register ./my_blueprint.yaml
 agentctl blueprints list
+agentctl templates list
+agentctl mcps register ./mcp/postgres.yaml
+agentctl mcps list
+agentctl demo
 agentctl status
 ```
 

@@ -14,7 +14,7 @@ import yaml
 _STATE_DIR = ".kubeai"
 _STATE_FILE = "cli_state.json"
 
-_RAG_TEMPLATES = ("basic", "hybrid", "reranking")
+_RAG_TEMPLATES = ("basic", "hybrid", "reranking", "knowledge_graph", "scraper")
 _MEMORY_TEMPLATES = ("sliding_window", "summarizing", "episodic")
 
 

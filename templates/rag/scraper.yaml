@@ -1,0 +1,6 @@
+name: scraper
+chunk_size: 500
+overlap: 50
+timeout: 10
+user_agent: KubeAI-Scraper/1.0
+max_local_chunks: 3000
