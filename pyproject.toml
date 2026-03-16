@@ -12,6 +12,8 @@ dependencies = [
     "numpy",
     "rank-bm25",
     "click",
+    "fastapi[standard]",
+    "uvicorn[standard]",
 ]
 
 [project.optional-dependencies]
