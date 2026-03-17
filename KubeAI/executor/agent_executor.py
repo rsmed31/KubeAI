@@ -110,19 +110,12 @@ class AgentExecutor:
         ]
 
         t0 = time.monotonic()
-        try:
-            response = litellm.completion(
-                model=assignment.model_id,
-                messages=messages,
-                max_tokens=2048,
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"LiteLLM completion failed for model {assignment.model_id!r}: {exc}"
-            ) from exc
-
+        result_text, raw_usage = self._invoke_llm(
+            litellm=litellm,
+            messages=messages,
+            assignment=assignment,
+        )
         latency_ms = (time.monotonic() - t0) * 1000
-        result_text = response.choices[0].message.content or ""
 
         # Apply template post_run hooks
         if templates:
@@ -136,17 +129,8 @@ class AgentExecutor:
                     pass
             result_text = run_post_hooks(agent_obj_post, result_text)
 
-        usage = getattr(response, "usage", None)
-        raw_usage: dict[str, Any] = {}
-        token_cost = 0.0
-        if usage is not None:
-            total_tokens = getattr(usage, "total_tokens", 0) or 0
-            raw_usage = {
-                "prompt_tokens": getattr(usage, "prompt_tokens", 0),
-                "completion_tokens": getattr(usage, "completion_tokens", 0),
-                "total_tokens": total_tokens,
-            }
-            token_cost = (total_tokens / 1000.0) * self._FALLBACK_COST_PER_1K
+        total_tokens = raw_usage.get("total_tokens", 0)
+        token_cost = (total_tokens / 1000.0) * self._FALLBACK_COST_PER_1K
 
         return AgentResult(
             text=result_text,
@@ -154,6 +138,86 @@ class AgentExecutor:
             token_cost=token_cost,
             raw_usage=raw_usage,
         )
+
+    def _invoke_llm(
+        self,
+        *,
+        litellm: Any,
+        messages: list[dict[str, str]],
+        assignment: "Assignment",
+    ) -> tuple[str, dict[str, Any]]:
+        """
+        Invoke the LLM using LangChain when available, falling back to direct
+        LiteLLM. LangChain gives us tool calling, structured output, and
+        LangGraph compatibility; direct LiteLLM is the zero-dependency path.
+
+        Returns (result_text, raw_usage_dict).
+        """
+        # Build kwargs shared between LangChain and LiteLLM paths
+        extra: dict[str, Any] = {}
+        if assignment.api_key:
+            extra["api_key"] = assignment.api_key
+        if assignment.base_url:
+            extra["api_base"] = assignment.base_url
+
+        # ── LangChain path (preferred when installed) ──────────────────────
+        try:
+            from langchain_community.chat_models import ChatLiteLLM  # type: ignore[import]
+            from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore[import]
+
+            lc_messages = []
+            for m in messages:
+                if m["role"] == "system":
+                    lc_messages.append(SystemMessage(content=m["content"]))
+                else:
+                    lc_messages.append(HumanMessage(content=m["content"]))
+
+            chat = ChatLiteLLM(
+                model=assignment.model_id,
+                max_tokens=2048,
+                **extra,
+            )
+            response = chat.invoke(lc_messages)
+            text = response.content if hasattr(response, "content") else str(response)
+            # LangChain usage metadata (available on AIMessage)
+            usage_meta = getattr(response, "usage_metadata", None) or {}
+            raw_usage: dict[str, Any] = {
+                "prompt_tokens":     usage_meta.get("input_tokens", 0),
+                "completion_tokens": usage_meta.get("output_tokens", 0),
+                "total_tokens":      usage_meta.get("total_tokens", 0),
+            }
+            return text, raw_usage
+
+        except ImportError:
+            pass  # LangChain not installed — use direct LiteLLM below
+        except Exception as exc:
+            raise RuntimeError(
+                f"LangChain invocation failed for model {assignment.model_id!r}: {exc}"
+            ) from exc
+
+        # ── Direct LiteLLM path (fallback) ────────────────────────────────
+        try:
+            response = litellm.completion(
+                model=assignment.model_id,
+                messages=messages,
+                max_tokens=2048,
+                **extra,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"LiteLLM completion failed for model {assignment.model_id!r}: {exc}"
+            ) from exc
+
+        text = response.choices[0].message.content or ""
+        usage = getattr(response, "usage", None)
+        raw_usage = {}
+        if usage is not None:
+            raw_usage = {
+                "prompt_tokens":     getattr(usage, "prompt_tokens", 0),
+                "completion_tokens": getattr(usage, "completion_tokens", 0),
+                "total_tokens":      getattr(usage, "total_tokens", 0) or 0,
+            }
+        return text, raw_usage
 
     def __repr__(self) -> str:
         return "AgentExecutor()"

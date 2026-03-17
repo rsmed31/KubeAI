@@ -36,6 +36,11 @@ function navigate(hash) {
   const h = hash || '#overview';
   const renderer = routes[h] || routes['#overview'];
 
+  // Reset cluster detail view when navigating away from #clusters
+  if (h !== '#clusters' && typeof ClustersPage !== 'undefined') {
+    ClustersPage._resetView();
+  }
+
   // Update active nav link
   document.querySelectorAll('.nav-link').forEach(el => {
     el.classList.toggle('active', el.getAttribute('href') === h);
@@ -93,6 +98,7 @@ function updateLastUpdated() {
 function setActiveCluster(name) {
   AppState.activeCluster = name;
   updateClusterContext();
+  closeClusterDropdown();
 }
 
 function updateClusterContext() {
@@ -101,11 +107,54 @@ function updateClusterContext() {
   if (topbar) topbar.textContent = name;
   const statusbar = document.getElementById('statusbar-cluster-name');
   if (statusbar) statusbar.textContent = name;
-  // Highlight topbar badge when non-default cluster is active
   const badge = document.getElementById('topbar-cluster-badge');
   if (badge) {
     badge.style.borderColor = name !== 'default' ? 'var(--accent-cyan)' : '';
-    badge.style.background = name !== 'default' ? 'rgba(6,182,212,0.1)' : '';
+    badge.style.background  = name !== 'default' ? 'rgba(6,182,212,0.1)' : '';
+  }
+}
+
+function toggleClusterDropdown() {
+  const dd = document.getElementById('cluster-dropdown');
+  if (!dd) return;
+  if (dd.style.display === 'none') {
+    // Build list from AppState.clusters
+    const clusters = AppState.clusters || [];
+    const names = clusters.length > 0 ? clusters.map(c => c.name) : ['default'];
+    dd.innerHTML = `
+      <div style="padding:6px 10px;font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid var(--border-color);">Switch context</div>
+      ${names.map(n => `
+        <div onclick="setActiveCluster('${escHtml(n)}')" style="padding:8px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:8px;${n === AppState.activeCluster ? 'color:var(--accent-cyan);font-weight:600;' : ''}"
+          onmouseenter="this.style.background='var(--bg-elevated)'" onmouseleave="this.style.background=''">
+          <i data-lucide="server" style="width:13px;height:13px;"></i>
+          ${escHtml(n)}
+          ${n === AppState.activeCluster ? '<span style="margin-left:auto;font-size:10px;">✓ active</span>' : ''}
+        </div>
+      `).join('')}
+      <div style="border-top:1px solid var(--border-color);padding:6px 12px;">
+        <a href="#clusters" style="font-size:12px;color:var(--accent-cyan);text-decoration:none;">Manage clusters →</a>
+      </div>
+    `;
+    dd.style.display = 'block';
+    window.refreshIcons?.();
+    // Close on outside click
+    setTimeout(() => document.addEventListener('click', closeClusterDropdownOnOutside), 0);
+  } else {
+    closeClusterDropdown();
+  }
+}
+
+function closeClusterDropdown() {
+  const dd = document.getElementById('cluster-dropdown');
+  if (dd) dd.style.display = 'none';
+  document.removeEventListener('click', closeClusterDropdownOnOutside);
+}
+
+function closeClusterDropdownOnOutside(e) {
+  const badge = document.getElementById('topbar-cluster-badge');
+  const dd    = document.getElementById('cluster-dropdown');
+  if (dd && badge && !badge.contains(e.target) && !dd.contains(e.target)) {
+    closeClusterDropdown();
   }
 }
 

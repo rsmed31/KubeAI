@@ -36,6 +36,8 @@ def _make_ws_payload(cp) -> dict:
                 "load": m.load,
                 "healthy": m.healthy,
                 "cost_per_1k": m.cost_per_1k_tokens,
+                "has_key": bool(m.api_key),
+                "base_url": m.base_url,
             })
     try:
         from KubeAI.dashboard.deps import get_runtime
@@ -131,6 +133,10 @@ app.include_router(monitoring.router, prefix="/api")
 # ── Cluster API router ─────────────────────────────────────────────────────
 from KubeAI.dashboard.api import cluster as cluster_api
 app.include_router(cluster_api.router, prefix="/api")
+
+# ── Orchestrator API router ─────────────────────────────────────────────────
+from KubeAI.dashboard.api import orchestrator as orchestrator_api
+app.include_router(orchestrator_api.router, prefix="/api")
 
 
 @app.websocket("/ws")

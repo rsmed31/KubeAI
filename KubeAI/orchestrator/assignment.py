@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable
 
+# sentinel — distinguishes "no key" from explicitly empty string
+_UNSET = ""
+
 from .llm_pool import LLMPool, ModelEntry, ModelTier
 from .mcp_pool import MCPPool, MCPServer
 
@@ -22,12 +25,16 @@ class Assignment:
     provider: str
     tier: ModelTier
     mcp_servers: tuple[MCPServer, ...] = field(default_factory=tuple)
+    # Credentials forwarded from ModelEntry — never logged/serialised
+    api_key: str = field(default="", repr=False, compare=False, hash=False)
+    base_url: str = field(default="", compare=False, hash=False)
 
     def __repr__(self) -> str:
         mcp_ids = [s.server_id for s in self.mcp_servers]
+        has_key = "yes" if self.api_key else "no"
         return (
             f"Assignment(model_id={self.model_id!r}, tier={self.tier.value!r}, "
-            f"mcp_servers={mcp_ids!r})"
+            f"api_key={has_key}, mcp_servers={mcp_ids!r})"
         )
 
 
@@ -91,6 +98,8 @@ class AssignmentPolicy:
             provider=model.provider,
             tier=model.tier,
             mcp_servers=tuple(mcps),
+            api_key=model.api_key,
+            base_url=model.base_url,
         )
 
     def routing_model(self) -> ModelEntry:

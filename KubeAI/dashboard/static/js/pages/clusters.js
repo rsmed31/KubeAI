@@ -404,9 +404,13 @@ const ClustersPage = (() => {
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
-  function _backToOverview() {
+  function _resetView() {
     _view = 'overview';
     _activeCluster = null;
+  }
+
+  function _backToOverview() {
+    _resetView();
     const state = window.AppState || { clusters: [] };
     render(state);
   }
@@ -506,6 +510,6 @@ const ClustersPage = (() => {
     }
   }
 
-  return { render, _backToOverview, _toggleCreateForm, _createCluster,
+  return { render, _resetView, _backToOverview, _toggleCreateForm, _createCluster,
            _deleteCluster, _setDetailTab, _quickSubmit };
 })();

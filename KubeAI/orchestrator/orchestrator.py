@@ -192,6 +192,10 @@ class Orchestrator:
             decompose_fn if decompose_fn is not None else _llm_decompose
         )
         self._document_probe = document_probe or DocumentProbe()
+        # Mutable runtime config — changeable via dashboard/API without restart
+        self._routing_model_override: str | None = None   # None = auto (largest)
+        self._min_confidence: float = 0.0                 # reject if best score < this
+        self._decompose_enabled: bool = True
 
     def route(
         self, task: str, blueprints: list["Blueprint"]
@@ -214,13 +218,28 @@ class Orchestrator:
         """
         if not blueprints:
             raise ValueError("blueprints list must not be empty")
-        model = self._policy.routing_model()
+
+        # Use override model if set, otherwise auto-select largest
+        if self._routing_model_override:
+            pool_models = {m.model_id: m for m in self._policy._llm.list_models()}  # noqa: SLF001
+            model = pool_models.get(self._routing_model_override) or self._policy.routing_model()
+        else:
+            model = self._policy.routing_model()
+
         scores: dict[str, float] = {
             bp.name: max(0.0, min(1.0, self._score_fn(task, bp, model.model_id)))
             for bp in blueprints
         }
         best = max(blueprints, key=lambda b: scores[b.name])
-        return best, scores[best.name]
+        best_score = scores[best.name]
+
+        if best_score < self._min_confidence:
+            raise RuntimeError(
+                f"No blueprint met minimum confidence {self._min_confidence:.2f} "
+                f"(best={best.name!r} scored {best_score:.2f})"
+            )
+
+        return best, best_score
 
     def decompose(self, task: str, max_subtasks: int = 5) -> list[str]:
         """
@@ -532,5 +551,55 @@ class Orchestrator:
             f"mcps={mcp_text}; capabilities={capability_text}."
         )
 
+    def get_config(self) -> dict[str, Any]:
+        """Return current mutable orchestrator configuration."""
+        try:
+            routing_model = self._policy.routing_model()
+            effective_model = self._routing_model_override or routing_model.model_id
+            effective_provider = routing_model.provider
+            if self._routing_model_override:
+                pool_models = {m.model_id: m for m in self._policy._llm.list_models()}  # noqa: SLF001
+                if self._routing_model_override in pool_models:
+                    effective_provider = pool_models[self._routing_model_override].provider
+        except RuntimeError:
+            effective_model = self._routing_model_override or "none"
+            effective_provider = "unknown"
+
+        return {
+            "routing_model_override": self._routing_model_override,
+            "effective_routing_model": effective_model,
+            "effective_routing_provider": effective_provider,
+            "min_confidence": self._min_confidence,
+            "decompose_enabled": self._decompose_enabled,
+            "available_models": [
+                {"model_id": m.model_id, "tier": m.tier.value, "provider": m.provider}
+                for m in self._policy._llm.list_models()  # noqa: SLF001
+            ],
+        }
+
+    def update_config(
+        self,
+        *,
+        routing_model_override: str | None = ...,  # type: ignore[assignment]
+        min_confidence: float | None = None,
+        decompose_enabled: bool | None = None,
+    ) -> None:
+        """Update runtime orchestrator configuration."""
+        if routing_model_override is not ...:  # type: ignore[comparison-overlap]
+            # Validate override exists in pool if non-None
+            if routing_model_override is not None:
+                pool_ids = {m.model_id for m in self._policy._llm.list_models()}  # noqa: SLF001
+                if routing_model_override not in pool_ids:
+                    raise ValueError(
+                        f"Model {routing_model_override!r} not found in pool. "
+                        f"Registered: {sorted(pool_ids)}"
+                    )
+            self._routing_model_override = routing_model_override
+        if min_confidence is not None:
+            self._min_confidence = max(0.0, min(1.0, float(min_confidence)))
+        if decompose_enabled is not None:
+            self._decompose_enabled = bool(decompose_enabled)
+
     def __repr__(self) -> str:
-        return f"Orchestrator(policy={self._policy!r})"
+        override = self._routing_model_override or "auto"
+        return f"Orchestrator(policy={self._policy!r}, routing_model={override!r})"

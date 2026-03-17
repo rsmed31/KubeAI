@@ -5,8 +5,141 @@ from __future__ import annotations
 import copy
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+
+# ── Supported provider catalog ─────────────────────────────────────────────────
+# Each entry describes how to connect to a provider via LiteLLM.
+# api_key_env: env var to read the key from automatically.
+# model_prefix: LiteLLM model string prefix (e.g. "gemini/", "groq/").
+# needs_base_url: True for self-hosted / custom endpoints.
+# default_base_url: Default base URL for providers that need it.
+# default_models: Suggested model IDs per tier (fast/capable/best).
+SUPPORTED_PROVIDERS: dict[str, dict] = {
+    "anthropic": {
+        "name": "Anthropic",
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "model_prefix": "",
+        "needs_base_url": False,
+        "is_local": False,
+        "default_models": {
+            "fast":    "claude-haiku-4-5-20251001",
+            "capable": "claude-sonnet-4-6",
+            "best":    "claude-opus-4-6",
+        },
+    },
+    "openai": {
+        "name": "OpenAI",
+        "api_key_env": "OPENAI_API_KEY",
+        "model_prefix": "",
+        "needs_base_url": False,
+        "is_local": False,
+        "default_models": {
+            "fast":    "gpt-4o-mini",
+            "capable": "gpt-4o",
+            "best":    "gpt-4o",
+        },
+    },
+    "google": {
+        "name": "Google Gemini",
+        "api_key_env": "GEMINI_API_KEY",
+        "model_prefix": "gemini/",
+        "needs_base_url": False,
+        "is_local": False,
+        "default_models": {
+            "fast":    "gemini/gemini-2.0-flash",
+            "capable": "gemini/gemini-2.0-flash",
+            "best":    "gemini/gemini-2.0-pro-exp",
+        },
+    },
+    "groq": {
+        "name": "Groq",
+        "api_key_env": "GROQ_API_KEY",
+        "model_prefix": "groq/",
+        "needs_base_url": False,
+        "is_local": False,
+        "default_models": {
+            "fast":    "groq/llama-3.1-8b-instant",
+            "capable": "groq/llama-3.3-70b-versatile",
+            "best":    "groq/llama-3.3-70b-versatile",
+        },
+    },
+    "mistral": {
+        "name": "Mistral AI",
+        "api_key_env": "MISTRAL_API_KEY",
+        "model_prefix": "mistral/",
+        "needs_base_url": False,
+        "is_local": False,
+        "default_models": {
+            "fast":    "mistral/mistral-small-latest",
+            "capable": "mistral/mistral-large-latest",
+            "best":    "mistral/mistral-large-latest",
+        },
+    },
+    "cohere": {
+        "name": "Cohere",
+        "api_key_env": "COHERE_API_KEY",
+        "model_prefix": "cohere/",
+        "needs_base_url": False,
+        "is_local": False,
+        "default_models": {
+            "fast":    "cohere/command-r",
+            "capable": "cohere/command-r-plus",
+            "best":    "cohere/command-r-plus",
+        },
+    },
+    "azure": {
+        "name": "Azure OpenAI",
+        "api_key_env": "AZURE_API_KEY",
+        "model_prefix": "azure/",
+        "needs_base_url": True,
+        "default_base_url": "https://<resource>.openai.azure.com",
+        "is_local": False,
+        "default_models": {
+            "fast":    "azure/gpt-4o-mini",
+            "capable": "azure/gpt-4o",
+            "best":    "azure/gpt-4o",
+        },
+    },
+    "aws_bedrock": {
+        "name": "AWS Bedrock",
+        "api_key_env": "AWS_ACCESS_KEY_ID",
+        "model_prefix": "bedrock/",
+        "needs_base_url": False,
+        "is_local": False,
+        "default_models": {
+            "fast":    "bedrock/anthropic.claude-3-haiku-20240307-v1:0",
+            "capable": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "best":    "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        },
+    },
+    "ollama": {
+        "name": "Ollama (local)",
+        "api_key_env": None,
+        "model_prefix": "ollama/",
+        "needs_base_url": True,
+        "default_base_url": "http://localhost:11434",
+        "is_local": True,
+        "default_models": {
+            "fast":    "ollama/llama3.2",
+            "capable": "ollama/llama3.1",
+            "best":    "ollama/llama3.1:70b",
+        },
+    },
+    "openai_compatible": {
+        "name": "OpenAI-compatible (vLLM / LM Studio / custom)",
+        "api_key_env": "OPENAI_API_KEY",
+        "model_prefix": "openai/",
+        "needs_base_url": True,
+        "default_base_url": "http://localhost:8000/v1",
+        "is_local": True,
+        "default_models": {
+            "fast":    "openai/model",
+            "capable": "openai/model",
+            "best":    "openai/model",
+        },
+    },
+}
 
 
 class ModelTier(str, Enum):
@@ -58,6 +191,9 @@ class ModelEntry:
     healthy: bool = True
     description: str = ""
     is_local: bool = False
+    # Credentials — stored in memory only, never persisted to disk
+    api_key: str = field(default="", repr=False)
+    base_url: str = ""         # For Ollama, Azure, vLLM, custom endpoints
 
     def is_local_runtime(self) -> bool:
         """Return True when this model runs on a local runtime (e.g. Ollama)."""

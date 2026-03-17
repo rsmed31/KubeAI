@@ -248,7 +248,13 @@ def get_cluster_runtime(name: str) -> Runtime:
 # ── Default registrations ──────────────────────────────────────────────────
 
 def _register_default_models(pool: LLMPool) -> None:
-    """Register default Anthropic models unless overridden by KUBEAI_MODELS_CONFIG."""
+    """Register models for every provider whose API key env var is set.
+
+    Falls back to Anthropic-only defaults if no other keys are found.
+    If KUBEAI_MODELS_CONFIG env var points to a JSON file, that takes priority.
+    """
+    from KubeAI.orchestrator.llm_pool import SUPPORTED_PROVIDERS
+
     config_path = os.environ.get("KUBEAI_MODELS_CONFIG")
     if config_path:
         try:
@@ -256,28 +262,71 @@ def _register_default_models(pool: LLMPool) -> None:
             load_pools_from_json(config_path, llm_pool=pool)
             return
         except Exception:
-            pass  # Fall through to defaults
+            pass  # Fall through to auto-detection
 
+    # Auto-detect: register default models for each provider with a key set
+    registered = 0
+    for provider_id, info in SUPPORTED_PROVIDERS.items():
+        env_var = info.get("api_key_env")
+        api_key = os.environ.get(env_var, "") if env_var else ""
+        is_local = info.get("is_local", False)
+
+        # Skip cloud providers with no key; always register local providers
+        if not api_key and not is_local:
+            continue
+
+        defaults = info.get("default_models", {})
+        base_url = os.environ.get(
+            f"KUBEAI_{provider_id.upper()}_BASE_URL",
+            info.get("default_base_url", ""),
+        )
+        tier_map = {
+            "fast":    (ModelTier.FAST,    0.001),
+            "capable": (ModelTier.CAPABLE, 0.003),
+            "best":    (ModelTier.BEST,    0.015),
+        }
+        for tier_name, model_id in defaults.items():
+            tier, default_cost = tier_map[tier_name]
+            pool.register(ModelEntry(
+                model_id=model_id,
+                provider=provider_id,
+                tier=tier,
+                cost_per_1k_tokens=default_cost,
+                description=f"{info['name']} {tier_name} model",
+                is_local=is_local,
+                api_key=api_key,
+                base_url=base_url,
+            ))
+            registered += 1
+
+    if registered > 0:
+        return
+
+    # Absolute fallback: register Anthropic models regardless (key may be set later)
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     pool.register(ModelEntry(
         model_id="claude-haiku-4-5-20251001",
         provider="anthropic",
         tier=ModelTier.FAST,
         cost_per_1k_tokens=0.001,
         description="Fast lightweight model for simple tasks",
+        api_key=anthropic_key,
     ))
     pool.register(ModelEntry(
-        model_id="claude-sonnet-4-5",
+        model_id="claude-sonnet-4-6",
         provider="anthropic",
         tier=ModelTier.CAPABLE,
         cost_per_1k_tokens=0.003,
         description="Balanced model for most tasks",
+        api_key=anthropic_key,
     ))
     pool.register(ModelEntry(
-        model_id="claude-opus-4-5",
+        model_id="claude-opus-4-6",
         provider="anthropic",
         tier=ModelTier.BEST,
         cost_per_1k_tokens=0.015,
         description="Most capable model for complex tasks",
+        api_key=anthropic_key,
     ))
 
 

@@ -309,6 +309,8 @@ class RegisterModelRequest(BaseModel):
     cost_per_1k_tokens: float = 0.003
     description: str = ""
     is_local: bool = False
+    api_key: str = ""    # stored in memory only — never returned in responses
+    base_url: str = ""   # required for Ollama, Azure, vLLM, custom endpoints
 
 
 class RegisterMCPRequest(BaseModel):
@@ -337,6 +339,7 @@ def register_cluster_model(
         model_id=body.model_id, provider=body.provider, tier=tier,
         cost_per_1k_tokens=body.cost_per_1k_tokens,
         description=body.description, is_local=body.is_local,
+        api_key=body.api_key, base_url=body.base_url,
     ))
     return {"status": "registered", "model_id": body.model_id, "cluster": cluster}
 
@@ -357,6 +360,30 @@ def register_cluster_mcp(
         capabilities=frozenset(body.capabilities), description=body.description,
     ))
     return {"status": "registered", "server_id": body.server_id, "cluster": cluster}
+
+
+# ── Provider catalog ───────────────────────────────────────────────────────
+
+@router.get("/providers")
+def list_providers() -> list[dict]:
+    """Return the fixed list of supported LLM providers with metadata."""
+    from KubeAI.orchestrator.llm_pool import SUPPORTED_PROVIDERS
+    import os
+    result = []
+    for provider_id, info in SUPPORTED_PROVIDERS.items():
+        env_var = info.get("api_key_env")
+        has_key = bool(os.environ.get(env_var, "")) if env_var else info.get("is_local", False)
+        result.append({
+            "id": provider_id,
+            "name": info["name"],
+            "api_key_env": env_var,
+            "has_key": has_key,
+            "needs_base_url": info.get("needs_base_url", False),
+            "default_base_url": info.get("default_base_url", ""),
+            "is_local": info.get("is_local", False),
+            "default_models": info.get("default_models", {}),
+        })
+    return result
 
 
 # ── Default-cluster pool management (backward compat) ─────────────────────
@@ -396,6 +423,7 @@ def register_model(
         model_id=body.model_id, provider=body.provider, tier=tier,
         cost_per_1k_tokens=body.cost_per_1k_tokens,
         description=body.description, is_local=body.is_local,
+        api_key=body.api_key, base_url=body.base_url,
     ))
     return {"status": "registered", "model_id": body.model_id, "tier": tier.value}
 
@@ -422,3 +450,15 @@ def remove_model(
             raise HTTPException(status_code=404, detail=f"Model {model_id!r} not found")
         del runtime.llm_pool._models[model_id]  # noqa: SLF001
     return {"status": "removed", "model_id": model_id}
+
+
+@router.delete("/pools/mcps/{server_id}")
+def remove_mcp(
+    server_id: str,
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    with runtime.mcp_pool._lock:  # noqa: SLF001
+        if server_id not in runtime.mcp_pool._servers:  # noqa: SLF001
+            raise HTTPException(status_code=404, detail=f"MCP server {server_id!r} not found")
+        del runtime.mcp_pool._servers[server_id]  # noqa: SLF001
+    return {"status": "removed", "server_id": server_id}
