@@ -47,6 +47,10 @@ agentctl demo
 
 ## Architecture
 
+![KubeAI Architecture](images/kubeai-architecture.png)
+
+![LLM & MCP Pools](images/kubeai-llm-mcp-pools.png)
+
 | Component           | File                                      | K8s Analogue              |
 |---------------------|-------------------------------------------|---------------------------|
 | LLMPool             | `orchestrator/llm_pool.py`                | Node pool                 |
