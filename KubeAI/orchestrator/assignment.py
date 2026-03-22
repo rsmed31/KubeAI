@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from typing import Iterable
 
 # sentinel — distinguishes "no key" from explicitly empty string
@@ -28,6 +29,8 @@ class Assignment:
     # Credentials forwarded from ModelEntry — never logged/serialised
     api_key: str = field(default="", repr=False, compare=False, hash=False)
     base_url: str = field(default="", compare=False, hash=False)
+    # Recommended framework from benchmark data (empty = use default litellm)
+    recommended_framework: str = field(default="", compare=False, hash=False)
 
     def __repr__(self) -> str:
         mcp_ids = [s.server_id for s in self.mcp_servers]
@@ -54,9 +57,20 @@ class AssignmentPolicy:
       (use routing_model() before every routing call).
     """
 
-    def __init__(self, llm_pool: LLMPool, mcp_pool: MCPPool) -> None:
+    def __init__(
+        self,
+        llm_pool: LLMPool,
+        mcp_pool: MCPPool,
+        *,
+        enforce_provider_credentials: bool | None = None,
+    ) -> None:
         self._llm = llm_pool
         self._mcp = mcp_pool
+        if enforce_provider_credentials is None:
+            raw = os.getenv("KUBEAI_ENFORCE_PROVIDER_CREDENTIALS", "1").strip().lower()
+            self._enforce_provider_credentials = raw not in {"0", "false", "no", "off"}
+        else:
+            self._enforce_provider_credentials = enforce_provider_credentials
 
     def assign(
         self,
@@ -89,6 +103,14 @@ class AssignmentPolicy:
             cost_hint=cost_hint,
             task=task,
         )
+        if (
+            self._enforce_provider_credentials
+            and not model.is_local_runtime()
+            and not model.api_key
+        ):
+            raise RuntimeError(
+                f"Selected model {model.model_id!r} has no API key configured"
+            )
         mcps: list[MCPServer] = self._mcp.select(
             required_capabilities,
             task=task,

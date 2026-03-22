@@ -1,0 +1,38 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "panels": [
+    {
+      "title": "Token Cost by Provider",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "kubeai_token_cost_total", "legendFormat": "{{blueprint}} / {{provider}}" }
+      ]
+    },
+    {
+      "title": "Routing Confidence Distribution",
+      "type": "histogram",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "kubeai_routing_confidence_sum / kubeai_routing_confidence_count", "legendFormat": "{{blueprint}}" }
+      ]
+    },
+    {
+      "title": "Model Health Status",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "kubeai_model_health", "legendFormat": "{{model_id}}" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["kubeai"],
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "KubeAI - LLM Pool",
+  "uid": "kubeai-llm-pool"
+}

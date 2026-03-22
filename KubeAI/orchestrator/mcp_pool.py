@@ -21,12 +21,16 @@ class MCPServer:
     capabilities: frozenset[str]
     healthy: bool = True
     description: str = ""
+    transport: str = "http"
+    timeout_s: float = 15.0
+    tags: frozenset[str] = frozenset()
+    auth_headers: dict[str, str] | None = None
 
     def __repr__(self) -> str:
         caps = ", ".join(sorted(self.capabilities))
         return (
             f"MCPServer(server_id={self.server_id!r}, "
-            f"capabilities=[{caps}], healthy={self.healthy})"
+            f"capabilities=[{caps}], transport={self.transport!r}, healthy={self.healthy})"
         )
 
 

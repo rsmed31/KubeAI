@@ -189,7 +189,9 @@ async def submit_cluster_task(
     description: str = Form(...),
     blueprint: str = Form(None),
     file: UploadFile = File(None),
+    files: list[UploadFile] = File(default=[]),
     url: str = Form(None),
+    urls: list[str] = Form(default=[]),
     reg: ClusterRegistry = Depends(get_cluster_registry),
 ) -> dict[str, Any]:
     """Submit a task to a named cluster with optional file data and URL."""
@@ -198,18 +200,38 @@ async def submit_cluster_task(
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Cluster {cluster!r} not found")
 
-    data: str | None = None
+    payload_files: list[UploadFile] = []
     if file is not None:
-        raw = await file.read()
-        data = raw.decode("utf-8", errors="replace")
+        payload_files.append(file)
+    payload_files.extend(files)
+
+    file_payloads: list[str] = []
+    file_names: list[str] = []
+    for item in payload_files:
+        raw = await item.read()
+        decoded = raw.decode("utf-8", errors="replace")
+        if decoded.strip():
+            file_payloads.append(f"--- FILE: {item.filename or 'uploaded'} ---\n{decoded}")
+            file_names.append(item.filename or "uploaded")
+    data: str | None = "\n\n".join(file_payloads) if file_payloads else None
+
+    all_urls: list[str] = []
+    if url:
+        all_urls.append(url)
+    all_urls.extend(urls)
+    deduped_urls = sorted({entry.strip() for entry in all_urls if entry and entry.strip()})
 
     result = rt.control_plane.submit_task(
         description=description,
         blueprint=blueprint or None,
         data=data,
         data_url=url or None,
+        data_urls=deduped_urls,
+        file_names=file_names,
     )
     result["cluster"] = cluster
+    result["file_names"] = file_names
+    result["urls"] = deduped_urls
     return result
 
 
@@ -289,6 +311,7 @@ def cluster_pools(
             {
                 "model_id": m.model_id, "provider": m.provider, "tier": m.tier.value,
                 "cost_per_1k": m.cost_per_1k_tokens, "load": m.load, "healthy": m.healthy,
+                "description": m.description,
             }
             for m in rt.llm_pool.list_models()
         ],
@@ -296,6 +319,8 @@ def cluster_pools(
             {
                 "server_id": s.server_id, "endpoint": s.endpoint,
                 "capabilities": sorted(s.capabilities), "healthy": s.healthy,
+                "description": s.description, "transport": s.transport,
+                "timeout_s": s.timeout_s, "tags": sorted(s.tags),
             }
             for s in rt.mcp_pool.list_servers()
         ],
@@ -305,7 +330,7 @@ def cluster_pools(
 class RegisterModelRequest(BaseModel):
     model_id: str
     provider: str
-    tier: str = "capable"
+    tier: str | None = None
     cost_per_1k_tokens: float = 0.003
     description: str = ""
     is_local: bool = False
@@ -318,6 +343,10 @@ class RegisterMCPRequest(BaseModel):
     endpoint: str
     capabilities: list[str]
     description: str = ""
+    transport: str = "http"
+    timeout_s: float = 15.0
+    tags: list[str] = []
+    auth_headers: dict[str, str] = {}
 
 
 @router.post("/clusters/{cluster}/pools/models")
@@ -331,10 +360,15 @@ def register_cluster_model(
         rt = reg.get(cluster)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Cluster {cluster!r} not found")
-    try:
-        tier = ModelTier(body.tier)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid tier {body.tier!r}")
+    from KubeAI.orchestrator.llm_pool import infer_model_tier
+
+    if body.tier is None or not body.tier.strip():
+        tier = infer_model_tier(body.model_id, body.description)
+    else:
+        try:
+            tier = ModelTier(body.tier)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid tier {body.tier!r}")
     rt.llm_pool.register(ModelEntry(
         model_id=body.model_id, provider=body.provider, tier=tier,
         cost_per_1k_tokens=body.cost_per_1k_tokens,
@@ -358,6 +392,8 @@ def register_cluster_mcp(
     rt.mcp_pool.register(MCPServer(
         server_id=body.server_id, endpoint=body.endpoint,
         capabilities=frozenset(body.capabilities), description=body.description,
+        transport=body.transport, timeout_s=body.timeout_s,
+        tags=frozenset(body.tags), auth_headers=dict(body.auth_headers),
     ))
     return {"status": "registered", "server_id": body.server_id, "cluster": cluster}
 
@@ -372,7 +408,14 @@ def list_providers() -> list[dict]:
     result = []
     for provider_id, info in SUPPORTED_PROVIDERS.items():
         env_var = info.get("api_key_env")
-        has_key = bool(os.environ.get(env_var, "")) if env_var else info.get("is_local", False)
+        required_env = info.get("required_env", [])
+        # has_key is True only when ALL required env vars are set
+        if required_env:
+            has_key = all(bool(os.environ.get(v, "")) for v in required_env)
+        elif info.get("auto_detect") == "endpoint":
+            has_key = True  # local providers don't need API keys
+        else:
+            has_key = bool(os.environ.get(env_var, "")) if env_var else False
         result.append({
             "id": provider_id,
             "name": info["name"],
@@ -404,6 +447,7 @@ def list_pools(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
             {
                 "server_id": s.server_id, "endpoint": s.endpoint,
                 "capabilities": sorted(s.capabilities), "healthy": s.healthy, "description": s.description,
+                "transport": s.transport, "timeout_s": s.timeout_s, "tags": sorted(s.tags),
             }
             for s in runtime.mcp_pool.list_servers()
         ],
@@ -415,10 +459,15 @@ def register_model(
     body: RegisterModelRequest,
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
-    try:
-        tier = ModelTier(body.tier)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid tier {body.tier!r}")
+    from KubeAI.orchestrator.llm_pool import infer_model_tier
+
+    if body.tier is None or not body.tier.strip():
+        tier = infer_model_tier(body.model_id, body.description)
+    else:
+        try:
+            tier = ModelTier(body.tier)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid tier {body.tier!r}")
     runtime.llm_pool.register(ModelEntry(
         model_id=body.model_id, provider=body.provider, tier=tier,
         cost_per_1k_tokens=body.cost_per_1k_tokens,
@@ -436,6 +485,8 @@ def register_mcp(
     runtime.mcp_pool.register(MCPServer(
         server_id=body.server_id, endpoint=body.endpoint,
         capabilities=frozenset(body.capabilities), description=body.description,
+        transport=body.transport, timeout_s=body.timeout_s,
+        tags=frozenset(body.tags), auth_headers=dict(body.auth_headers),
     ))
     return {"status": "registered", "server_id": body.server_id}
 

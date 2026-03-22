@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from KubeAI.adapters.base import OrchestrationAdapter
     from KubeAI.blueprint import Blueprint
     from KubeAI.memory.shared_memory import SharedMemory
     from KubeAI.orchestrator.assignment import Assignment
@@ -53,6 +54,7 @@ class AgentExecutor:
         memory: "SharedMemory | None" = None,
         agent_id: str | None = None,
         templates: "list[Template] | None" = None,
+        adapter: "OrchestrationAdapter | None" = None,
     ) -> AgentResult:
         """
         Execute *task* using the model specified in *assignment*.
@@ -65,6 +67,8 @@ class AgentExecutor:
             agent_id: Optional agent ID used to load working-memory context.
             templates: Optional list of Template objects to attach for pre/post hooks.
                        Templates run pre_run() before LLM call and post_run() after.
+            adapter: Optional OrchestrationAdapter. When provided, the adapter
+                     handles the LLM call instead of the built-in _invoke_llm().
 
         Returns:
             AgentResult with generated text, latency, and token cost.
@@ -104,18 +108,32 @@ class AgentExecutor:
                     pass  # Skip template failures — don't block execution
             augmented_task = run_pre_hooks(agent_obj, augmented_task)
 
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": augmented_task},
-        ]
+        if adapter is not None:
+            from KubeAI.adapters.base import AdapterResult as _AR
+            adapter_result = adapter.invoke(
+                task=augmented_task,
+                system_prompt=system_content,
+                model_id=assignment.model_id,
+                api_key=assignment.api_key,
+                base_url=assignment.base_url,
+                max_tokens=2048,
+            )
+            result_text = adapter_result.text
+            raw_usage = adapter_result.raw_usage
+            latency_ms = adapter_result.latency_ms
+        else:
+            messages = [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": augmented_task},
+            ]
 
-        t0 = time.monotonic()
-        result_text, raw_usage = self._invoke_llm(
-            litellm=litellm,
-            messages=messages,
-            assignment=assignment,
-        )
-        latency_ms = (time.monotonic() - t0) * 1000
+            t0 = time.monotonic()
+            result_text, raw_usage = self._invoke_llm(
+                litellm=litellm,
+                messages=messages,
+                assignment=assignment,
+            )
+            latency_ms = (time.monotonic() - t0) * 1000
 
         # Apply template post_run hooks
         if templates:

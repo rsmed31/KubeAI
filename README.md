@@ -72,7 +72,39 @@ agentctl demo
 python -c "from KubeAI.dashboard.server import serve; serve()"
 ```
 
-Open `http://localhost:8000` to view live agent pool status, routing decisions, memory usage, cost per agent, eval scores, and task history.
+Open `http://localhost:8000` to use the unified React dashboard.
+
+Dashboard behavior is now real-data only:
+- No fake seeded runtime state is injected at startup.
+- No default MCP servers are auto-registered.
+- Models are registered only when valid environment credentials exist or via the UI/API.
+- Fresh startup can be intentionally empty (no models, no agents) until you configure providers.
+
+### Startup Requirements
+
+For hosted providers, set at least one provider key before starting:
+
+```bash
+# Example
+export OPENAI_API_KEY=sk-...
+# or
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Optional runtime flags:
+- `KUBEAI_NO_DEFAULT_BLUEPRINTS=1` disables default blueprint auto-registration.
+
+### Frontend Build Output
+
+The React app in [ui/](ui/) is the single dashboard implementation and builds into [KubeAI/dashboard/static/](KubeAI/dashboard/static/).
+
+```bash
+cd ui
+npm install
+npm run build
+```
+
+The build clears stale legacy static files before writing fresh assets.
 
 ---
 
@@ -104,6 +136,12 @@ pytest
 pytest -v tests/test_e2e_lifecycle.py
 ```
 
+If test collection fails with `ModuleNotFoundError: respx`, install/update dev extras and re-run:
+
+```bash
+pip install -e ".[dev]"
+```
+
 ---
 
 ## Project Status
@@ -115,11 +153,17 @@ pytest -v tests/test_e2e_lifecycle.py
 - Memory templates: sliding_window, summarizing, episodic
 - SharedMemory backends: in-memory, SQLite, and etcd
 - ControlPlaneAPI with MetricsStore and EventStreamHub
-- FastAPI dashboard with WebSocket streaming and static UI
+- FastAPI dashboard with WebSocket streaming and unified React UI
 - AgentLifecycleManager with spawn/idle/terminate lifecycle sync
 - Observability package: structured JSON logging + in-process span tracing
 - CLI surface: run, blueprints, templates, MCP registry, status, demo
 - E2E integration tests (no network required, injected score/decompose fns)
+
+**Recent behavior hardening:**
+- Assignment rejects non-local model execution without a configured API key.
+- Restored stale checkpoints are filtered, and agents bound to missing models are marked terminated.
+- Health probing runs immediately on startup instead of waiting for the first interval.
+- Deployment spec supports `min_replicas = 0` for true empty-cluster boot.
 
 **In Progress:**
 - Wiring orchestrator/scheduler lifecycle into real LLM execution flows

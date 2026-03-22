@@ -1,0 +1,38 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "panels": [
+    {
+      "title": "MCP Tool Invocations",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "rate(kubeai_mcp_invocations_total[5m]) * 60", "legendFormat": "{{server_id}}" }
+      ]
+    },
+    {
+      "title": "MCP Tool Latency",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "kubeai_mcp_latency_ms_sum / kubeai_mcp_latency_ms_count", "legendFormat": "avg {{server_id}}" }
+      ]
+    },
+    {
+      "title": "MCP Error Rate",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "rate(kubeai_mcp_errors_total[5m]) * 60", "legendFormat": "{{server_id}}" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["kubeai"],
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "KubeAI - MCP Tools",
+  "uid": "kubeai-mcp-tools"
+}

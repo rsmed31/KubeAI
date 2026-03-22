@@ -295,3 +295,29 @@ class TestControlPlaneOverviewAndEvents:
 
         assert 'KubeAI_tasks_total{blueprint="research_agent",status="complete"} 1.0' in text
         assert 'KubeAI_task_latency_ms_count{blueprint="research_agent"} 1.0' in text
+
+    def test_autoscale_signals_include_queue_depth_and_avg_token_cost(self) -> None:
+        api = ControlPlaneAPI()
+
+        api.submit_task("queued work 1", blueprint="research_agent")
+        api.submit_task("queued work 2", blueprint="research_agent")
+        api.record_task_result(
+            task_id="task-a",
+            blueprint="research_agent",
+            status="complete",
+            latency_ms=12.0,
+            token_cost=0.02,
+        )
+        api.record_task_result(
+            task_id="task-b",
+            blueprint="research_agent",
+            status="complete",
+            latency_ms=14.0,
+            token_cost=0.04,
+        )
+
+        signals = api.autoscale_signals(blueprint="research_agent", recent_tasks=10)
+
+        assert signals["queue_depth"] >= 2.0
+        assert signals["avg_token_cost"] == pytest.approx(0.03)
+        assert signals["sample_size"] == 2.0

@@ -81,7 +81,7 @@ def test_spawn_creates_spawned_agent_with_correct_blueprint(
     agent = manager.spawn(blueprint)
     assert isinstance(agent, SpawnedAgent)
     assert agent.blueprint.name == blueprint.name
-    assert agent.state == "running"
+    assert agent.state == "pending"
     assert agent.task_count == 0
 
 
@@ -94,7 +94,7 @@ def test_spawn_registers_agent_in_control_plane(
     agent = manager.spawn(blueprint)
     record = control_plane.get_agent(agent.agent_id)
     assert record.agent_id == agent.agent_id
-    assert record.state == "running"
+    assert record.state == "pending"
     assert record.metadata["blueprint"] == blueprint.name
 
 
@@ -141,9 +141,9 @@ def test_mark_idle_updates_agent_state(
     manager: AgentLifecycleManager,
     blueprint: Blueprint,
 ) -> None:
-    """mark_idle() must transition the agent state from 'running' to 'idle'."""
+    """mark_idle() must transition the agent state from 'pending' to 'idle'."""
     agent = manager.spawn(blueprint)
-    assert agent.state == "running"
+    assert agent.state == "pending"
     manager.mark_idle(agent.agent_id)
     assert agent.state == "idle"
 
@@ -229,6 +229,7 @@ def test_repr_shows_running_and_idle_counts(
     """AgentLifecycleManager.__repr__ must reflect current running/idle counts."""
     a1 = manager.spawn(blueprint)
     a2 = manager.spawn(blueprint)
+    manager.record_task_complete(a2.agent_id)
     manager.mark_idle(a1.agent_id)
     r = repr(manager)
     assert "running=1" in r
@@ -242,5 +243,5 @@ def test_spawned_agent_repr(blueprint: Blueprint, policy: AssignmentPolicy) -> N
     r = repr(agent)
     assert "agent-abcd1234" in r
     assert "research" in r
-    assert "running" in r
+    assert "pending" in r
     assert "tasks=0" in r

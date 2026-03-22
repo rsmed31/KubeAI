@@ -1,0 +1,71 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "panels": [
+    {
+      "title": "Quality Score by Framework x Scenario",
+      "type": "table",
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "rawSql": "SELECT framework_id, scenario, avg_quality, avg_latency_ms, avg_cost, run_count, last_run FROM benchmark_leaderboard ORDER BY scenario, avg_quality DESC",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "title": "Quality Over Time by Framework",
+      "type": "timeseries",
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "targets": [
+        {
+          "rawSql": "SELECT recorded_at AS time, quality_score AS value, framework_id || ' - ' || scenario AS metric FROM benchmark_results ORDER BY recorded_at",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "title": "Latency Comparison",
+      "type": "barchart",
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "targets": [
+        {
+          "rawSql": "SELECT framework_id, scenario, avg_latency_ms FROM benchmark_leaderboard ORDER BY scenario, framework_id",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "title": "Cost Comparison",
+      "type": "barchart",
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "targets": [
+        {
+          "rawSql": "SELECT framework_id, scenario, avg_cost FROM benchmark_leaderboard ORDER BY scenario, framework_id",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "title": "Recent Benchmark Runs",
+      "type": "table",
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "targets": [
+        {
+          "rawSql": "SELECT run_id, scenario, framework_id, status, started_at, finished_at FROM benchmark_runs ORDER BY started_at DESC LIMIT 20",
+          "format": "table"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["kubeai", "benchmarks"],
+  "time": { "from": "now-7d", "to": "now" },
+  "title": "KubeAI - Framework Benchmarks",
+  "uid": "kubeai-framework-benchmarks"
+}

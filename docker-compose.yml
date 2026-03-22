@@ -1,0 +1,156 @@
+version: "3.9"
+
+services:
+  # ── PostgreSQL: config store + benchmark results ──────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: kubeai-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-kubeai}
+      POSTGRES_USER: ${POSTGRES_USER:-kubeai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kubeai_dev}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kubeai}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Redis: short-term memory + task queues ────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: kubeai-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── ChromaDB: vector store ────────────────────────────────────────────
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: kubeai-chromadb
+    ports:
+      - "${CHROMA_PORT:-8000}:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      ANONYMIZED_TELEMETRY: "false"
+
+  # ── Prometheus: metrics scraping ──────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: kubeai-prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ── Grafana: dashboards ───────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: kubeai-grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/workflow_overview.json
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+
+  # ── Airflow: benchmark DAG execution ──────────────────────────────────
+  airflow-init:
+    image: apache/airflow:2.9.1-python3.11
+    container_name: kubeai-airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db init
+        airflow users create \
+          --username ${AIRFLOW_USER:-admin} \
+          --password ${AIRFLOW_PASSWORD:-admin} \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@kubeai.local
+    environment: &airflow-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-kubeai}:${POSTGRES_PASSWORD:-kubeai_dev}@postgres:5432/${POSTGRES_DB:-kubeai}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      KUBEAI_API_URL: http://host.docker.internal:8080
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-kubeai}
+      POSTGRES_USER: ${POSTGRES_USER:-kubeai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kubeai_dev}
+    volumes:
+      - ./infra/airflow/dags:/opt/airflow/dags:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  airflow-webserver:
+    image: apache/airflow:2.9.1-python3.11
+    container_name: kubeai-airflow-webserver
+    command: webserver
+    ports:
+      - "${AIRFLOW_PORT:-8081}:8080"
+    environment: *airflow-env
+    volumes:
+      - ./infra/airflow/dags:/opt/airflow/dags:ro
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.1-python3.11
+    container_name: kubeai-airflow-scheduler
+    command: scheduler
+    environment: *airflow-env
+    volumes:
+      - ./infra/airflow/dags:/opt/airflow/dags:ro
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  postgres_data:
+  redis_data:
+  chroma_data:
+  prometheus_data:
+  grafana_data:

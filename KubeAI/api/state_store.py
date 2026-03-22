@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from KubeAI.api.control_plane import AgentRecord, ControlPlaneAPI, TaskRecord
 
 _DEFAULT_DB_PATH = Path.home() / ".kubeai" / "state.db"
+_MAX_CHECKPOINT_AGE_S = 24 * 60 * 60
 
 _TERMINAL_TASK_STATUSES = frozenset({"complete", "success", "failed", "error", "cancelled"})
 _RECOVERABLE_AGENT_STATES = frozenset({"terminated", "idle"})
@@ -139,21 +140,43 @@ class StateStore:
             finally:
                 conn.close()
 
+        now = time.time()
+        llm_pool = getattr(control_plane, "_llm_pool", None)
+        active_model_ids = {
+            model.model_id for model in llm_pool.list_models()
+        } if llm_pool is not None else None
+
         with control_plane._lock:  # noqa: SLF001
             for row in agent_rows:
+                saved_at = float(row["saved_at"])
+                if now - saved_at > _MAX_CHECKPOINT_AGE_S:
+                    continue
+
+                metadata = json.loads(row["metadata"])
+                model_id = metadata.get("model") if isinstance(metadata, dict) else None
+                model_missing = (
+                    active_model_ids is not None
+                    and isinstance(model_id, str)
+                    and model_id not in active_model_ids
+                )
+
                 record = AgentRecord(
                     agent_id=row["agent_id"],
                     name=row["name"],
                     description=row["description"],
-                    state=row["state"],
-                    healthy=bool(row["healthy"]),
+                    state=("terminated" if model_missing else row["state"]),
+                    healthy=(False if model_missing else bool(row["healthy"])),
                     load=float(row["load"]),
                     capabilities=tuple(json.loads(row["capabilities"])),
-                    metadata=json.loads(row["metadata"]),
+                    metadata=metadata,
                 )
                 control_plane._agents[record.agent_id] = record  # noqa: SLF001
 
             for row in task_rows:
+                saved_at = float(row["saved_at"])
+                if now - saved_at > _MAX_CHECKPOINT_AGE_S:
+                    continue
+
                 record_t = TaskRecord(
                     task_id=row["task_id"],
                     blueprint=row["blueprint"],

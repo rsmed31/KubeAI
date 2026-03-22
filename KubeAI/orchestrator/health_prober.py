@@ -44,8 +44,11 @@ class HealthProber:
         self._thread = t
 
     def _loop(self) -> None:
+        first = True
         while True:
-            time.sleep(self._interval_s)
+            if not first:
+                time.sleep(self._interval_s)
+            first = False
             models = self._pool.list_models()
             for entry in models:
                 self._probe_model(entry)
@@ -58,12 +61,18 @@ class HealthProber:
             return
 
         try:
+            extra: dict[str, object] = {}
+            if entry.api_key:
+                extra["api_key"] = entry.api_key
+            if entry.base_url:
+                extra["api_base"] = entry.base_url
             t0 = time.monotonic()
             response = litellm.completion(
                 model=entry.model_id,
                 messages=[{"role": "user", "content": self._CANARY_PROMPT}],
                 max_tokens=self._CANARY_MAX_TOKENS,
                 timeout=self._timeout_s,
+                **extra,
             )
             latency = time.monotonic() - t0
             content = (response.choices[0].message.content or "").lower()

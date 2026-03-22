@@ -54,7 +54,9 @@ async def submit_task_with_data(
     description: str = Form(...),
     blueprint: str = Form(None),
     file: UploadFile = File(None),
+    files: list[UploadFile] = File(default=[]),
     url: str = Form(None),
+    urls: list[str] = Form(default=[]),
     cp: ControlPlaneAPI = Depends(get_control_plane),
 ) -> dict:
     """Submit a task with an optional uploaded document and/or URL to scrape.
@@ -66,20 +68,40 @@ async def submit_task_with_data(
     4. Selects and executes with appropriate templates
     5. Streams progress via WebSocket stage events
     """
-    data: str | None = None
+    payload_files: list[UploadFile] = []
     if file is not None:
-        raw = await file.read()
-        data = raw.decode("utf-8", errors="replace")
+        payload_files.append(file)
+    payload_files.extend(files)
+
+    file_payloads: list[str] = []
+    file_names: list[str] = []
+    for item in payload_files:
+        raw = await item.read()
+        decoded = raw.decode("utf-8", errors="replace")
+        if decoded.strip():
+            file_payloads.append(f"--- FILE: {item.filename or 'uploaded'} ---\n{decoded}")
+            file_names.append(item.filename or "uploaded")
+    data: str | None = "\n\n".join(file_payloads) if file_payloads else None
+
+    all_urls: list[str] = []
+    if url:
+        all_urls.append(url)
+    all_urls.extend(urls)
+    deduped_urls = sorted({entry.strip() for entry in all_urls if entry and entry.strip()})
 
     result = cp.submit_task(
         description=description,
         blueprint=blueprint or None,
         data=data,
         data_url=url or None,
+        data_urls=deduped_urls,
+        file_names=file_names,
     )
-    if file is not None:
-        result["file_name"] = file.filename
+    if file_names:
+        result["file_names"] = file_names
+        result["file_count"] = len(file_names)
         result["file_size"] = len(data) if data else 0
-    if url:
-        result["url"] = url
+    if deduped_urls:
+        result["urls"] = deduped_urls
+        result["url_count"] = len(deduped_urls)
     return result

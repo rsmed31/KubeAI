@@ -120,6 +120,7 @@ class TaskWorker:
         description: str,
         data: str | None,
         data_url: str | None,
+        data_urls: list[str] | None = None,
     ) -> TaskIntent:
         """Analyze task text and data to determine what processing is needed."""
         intent = TaskIntent()
@@ -128,8 +129,10 @@ class TaskWorker:
         urls = _URL_PATTERN.findall(description)
         if data_url:
             urls.append(data_url)
+        if data_urls:
+            urls.extend(data_urls)
         if urls:
-            intent.urls_to_scrape = urls
+            intent.urls_to_scrape = sorted({u.strip() for u in urls if u.strip()})
             intent.needs_scraping = True
 
         # Data size analysis
@@ -149,6 +152,7 @@ class TaskWorker:
         description: str,
         data: str | None,
         data_url: str | None,
+        data_urls: list[str] | None,
         intent: TaskIntent,
     ) -> tuple[list["Template"], str]:
         """
@@ -167,7 +171,10 @@ class TaskWorker:
                 from KubeAI.templates.rag.basic import BasicRAG
                 scraper = RAGScraper(chunk_size=400, overlap=40)
                 rag = BasicRAG()
-                total_chunks = scraper.scrape_and_load(intent.urls_to_scrape, rag)
+                scrape_urls = intent.urls_to_scrape
+                if data_urls:
+                    scrape_urls = sorted({*scrape_urls, *[u.strip() for u in data_urls if u.strip()]})
+                total_chunks = scraper.scrape_and_load(scrape_urls, rag)
                 if total_chunks > 0:
                     templates.append(rag)
             except Exception:
@@ -204,12 +211,13 @@ class TaskWorker:
         preferred_blueprint_name: str | None = task_info.get("blueprint")
         data: str | None = task_info.get("data")
         data_url: str | None = task_info.get("data_url")
+        data_urls: list[str] = list(task_info.get("data_urls") or [])
 
         # ── Stage: ROUTING ────────────────────────────────────────────────
         self._cp.update_task_stage(task_id, "routing", "Analyzing task and routing to blueprint")
 
         # ── 1. Analyze intent ─────────────────────────────────────────────
-        intent = self._analyze_task_intent(description, data, data_url)
+        intent = self._analyze_task_intent(description, data, data_url, data_urls)
 
         # ── 2. Route to blueprint ─────────────────────────────────────────
         blueprints = self._registry.list_blueprints()
@@ -272,7 +280,7 @@ class TaskWorker:
                 urls=intent.urls_to_scrape[:3],
             )
 
-        templates, augmented_task = self._select_templates(description, data, data_url, intent)
+        templates, augmented_task = self._select_templates(description, data, data_url, data_urls, intent)
 
         if templates:
             self._cp.update_task_stage(
@@ -290,15 +298,37 @@ class TaskWorker:
             agent_id=agent.agent_id,
         )
 
-        # ── Stage: EXECUTING — fires immediately before LiteLLM call ──────
+        # ── 4b. Select framework adapter (benchmark-informed) ────────────
+        adapter = None
+        framework_name = "litellm"
+        try:
+            from KubeAI.workflow.intake import WorkflowIntake
+            from KubeAI.adapters.registry import AdapterRegistry
+            _intake: WorkflowIntake | None = getattr(self, "_workflow_intake", None)
+            if _intake is not None:
+                task_type = _intake.classify(description)
+                adapter = _intake.select_adapter(task_type)
+                if adapter is not None:
+                    framework_name = adapter.name
+        except Exception:
+            pass
+
         self._cp.update_task_stage(
-            task_id, "executing",
-            f"Calling LLM model={assignment.model_id} via LiteLLM",
-            agent_id=agent.agent_id,
-            model_id=assignment.model_id,
+            task_id, "framework_selected",
+            f"Framework selected: {framework_name}",
+            framework=framework_name,
         )
 
-        # ── 5. Execute via LiteLLM ────────────────────────────────────────
+        # ── Stage: EXECUTING — fires immediately before LLM call ──────────
+        self._cp.update_task_stage(
+            task_id, "executing",
+            f"Calling LLM model={assignment.model_id} via {framework_name}",
+            agent_id=agent.agent_id,
+            model_id=assignment.model_id,
+            framework=framework_name,
+        )
+
+        # ── 5. Execute via selected adapter (or LiteLLM default) ─────────
         result = self._executor.run(
             task=augmented_task,
             blueprint=blueprint,
@@ -306,6 +336,7 @@ class TaskWorker:
             memory=self._memory,
             agent_id=agent.agent_id,
             templates=templates if templates else None,
+            adapter=adapter,
         )
 
         # ── 6. Update agent state and record result ───────────────────────
