@@ -1,0 +1,38 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "panels": [
+    {
+      "title": "RAG Retrieval Latency",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "kubeai_rag_retrieval_latency_ms_sum / kubeai_rag_retrieval_latency_ms_count", "legendFormat": "avg {{template}}" }
+      ]
+    },
+    {
+      "title": "Documents Indexed",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "kubeai_rag_documents_indexed", "legendFormat": "{{template}}" }
+      ]
+    },
+    {
+      "title": "Chunk Count Distribution",
+      "type": "histogram",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "kubeai_rag_chunk_count_sum / kubeai_rag_chunk_count_count", "legendFormat": "avg chunks {{template}}" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["kubeai"],
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "KubeAI - RAG Pipeline",
+  "uid": "kubeai-rag-pipeline"
+}

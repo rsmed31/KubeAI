@@ -19,6 +19,7 @@ SUPPORTED_PROVIDERS: dict[str, dict] = {
     "anthropic": {
         "name": "Anthropic",
         "api_key_env": "ANTHROPIC_API_KEY",
+        "required_env": ["ANTHROPIC_API_KEY"],
         "model_prefix": "",
         "needs_base_url": False,
         "is_local": False,
@@ -31,6 +32,7 @@ SUPPORTED_PROVIDERS: dict[str, dict] = {
     "openai": {
         "name": "OpenAI",
         "api_key_env": "OPENAI_API_KEY",
+        "required_env": ["OPENAI_API_KEY"],
         "model_prefix": "",
         "needs_base_url": False,
         "is_local": False,
@@ -43,6 +45,7 @@ SUPPORTED_PROVIDERS: dict[str, dict] = {
     "google": {
         "name": "Google Gemini",
         "api_key_env": "GEMINI_API_KEY",
+        "required_env": ["GEMINI_API_KEY"],
         "model_prefix": "gemini/",
         "needs_base_url": False,
         "is_local": False,
@@ -55,6 +58,7 @@ SUPPORTED_PROVIDERS: dict[str, dict] = {
     "groq": {
         "name": "Groq",
         "api_key_env": "GROQ_API_KEY",
+        "required_env": ["GROQ_API_KEY"],
         "model_prefix": "groq/",
         "needs_base_url": False,
         "is_local": False,
@@ -67,6 +71,7 @@ SUPPORTED_PROVIDERS: dict[str, dict] = {
     "mistral": {
         "name": "Mistral AI",
         "api_key_env": "MISTRAL_API_KEY",
+        "required_env": ["MISTRAL_API_KEY"],
         "model_prefix": "mistral/",
         "needs_base_url": False,
         "is_local": False,
@@ -79,21 +84,22 @@ SUPPORTED_PROVIDERS: dict[str, dict] = {
     "cohere": {
         "name": "Cohere",
         "api_key_env": "COHERE_API_KEY",
-        "model_prefix": "cohere/",
+        "required_env": ["COHERE_API_KEY"],
+        "model_prefix": "cohere_chat/",
         "needs_base_url": False,
         "is_local": False,
         "default_models": {
-            "fast":    "cohere/command-r",
-            "capable": "cohere/command-r-plus",
-            "best":    "cohere/command-r-plus",
+            "fast":    "cohere_chat/command-r",
+            "capable": "cohere_chat/command-r-plus",
+            "best":    "cohere_chat/command-r-plus",
         },
     },
     "azure": {
         "name": "Azure OpenAI",
         "api_key_env": "AZURE_API_KEY",
+        "required_env": ["AZURE_API_KEY", "AZURE_API_BASE"],
         "model_prefix": "azure/",
         "needs_base_url": True,
-        "default_base_url": "https://<resource>.openai.azure.com",
         "is_local": False,
         "default_models": {
             "fast":    "azure/gpt-4o-mini",
@@ -104,18 +110,21 @@ SUPPORTED_PROVIDERS: dict[str, dict] = {
     "aws_bedrock": {
         "name": "AWS Bedrock",
         "api_key_env": "AWS_ACCESS_KEY_ID",
+        "required_env": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION_NAME"],
         "model_prefix": "bedrock/",
         "needs_base_url": False,
         "is_local": False,
         "default_models": {
-            "fast":    "bedrock/anthropic.claude-3-haiku-20240307-v1:0",
+            "fast":    "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0",
             "capable": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
-            "best":    "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "best":    "bedrock/anthropic.claude-3-opus-20240229-v1:0",
         },
     },
     "ollama": {
         "name": "Ollama (local)",
         "api_key_env": None,
+        "required_env": [],
+        "auto_detect": "endpoint",
         "model_prefix": "ollama/",
         "needs_base_url": True,
         "default_base_url": "http://localhost:11434",
@@ -128,7 +137,9 @@ SUPPORTED_PROVIDERS: dict[str, dict] = {
     },
     "openai_compatible": {
         "name": "OpenAI-compatible (vLLM / LM Studio / custom)",
-        "api_key_env": "OPENAI_API_KEY",
+        "api_key_env": "OPENAI_COMPATIBLE_API_KEY",
+        "required_env": ["OPENAI_COMPATIBLE_API_KEY"],
+        "auto_register": False,
         "model_prefix": "openai/",
         "needs_base_url": True,
         "default_base_url": "http://localhost:8000/v1",
@@ -137,6 +148,84 @@ SUPPORTED_PROVIDERS: dict[str, dict] = {
             "fast":    "openai/model",
             "capable": "openai/model",
             "best":    "openai/model",
+        },
+    },
+    "deepseek": {
+        "name": "Deepseek",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "required_env": ["DEEPSEEK_API_KEY"],
+        "model_prefix": "deepseek/",
+        "needs_base_url": False,
+        "is_local": False,
+        "default_models": {
+            "fast":    "deepseek/deepseek-chat",
+            "capable": "deepseek/deepseek-chat",
+            "best":    "deepseek/deepseek-reasoner",
+        },
+    },
+    "together_ai": {
+        "name": "Together AI",
+        "api_key_env": "TOGETHERAI_API_KEY",
+        "required_env": ["TOGETHERAI_API_KEY"],
+        "model_prefix": "together_ai/",
+        "needs_base_url": False,
+        "is_local": False,
+        "default_models": {
+            "fast":    "together_ai/meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo",
+            "capable": "together_ai/meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            "best":    "together_ai/meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        },
+    },
+    "fireworks_ai": {
+        "name": "Fireworks AI",
+        "api_key_env": "FIREWORKS_AI_API_KEY",
+        "required_env": ["FIREWORKS_AI_API_KEY"],
+        "model_prefix": "fireworks_ai/",
+        "needs_base_url": False,
+        "is_local": False,
+        "default_models": {
+            "fast":    "fireworks_ai/accounts/fireworks/models/llama-v3p2-11b-vision-instruct",
+            "capable": "fireworks_ai/accounts/fireworks/models/llama-v3p3-70b-instruct",
+            "best":    "fireworks_ai/accounts/fireworks/models/llama-v3p3-70b-instruct",
+        },
+    },
+    "perplexity": {
+        "name": "Perplexity",
+        "api_key_env": "PERPLEXITYAI_API_KEY",
+        "required_env": ["PERPLEXITYAI_API_KEY"],
+        "model_prefix": "perplexity/",
+        "needs_base_url": False,
+        "is_local": False,
+        "default_models": {
+            "fast":    "perplexity/sonar",
+            "capable": "perplexity/sonar-pro",
+            "best":    "perplexity/sonar-pro",
+        },
+    },
+    "xai": {
+        "name": "xAI",
+        "api_key_env": "XAI_API_KEY",
+        "required_env": ["XAI_API_KEY"],
+        "model_prefix": "xai/",
+        "needs_base_url": False,
+        "is_local": False,
+        "default_models": {
+            "fast":    "xai/grok-2-latest",
+            "capable": "xai/grok-2-latest",
+            "best":    "xai/grok-2-latest",
+        },
+    },
+    "openrouter": {
+        "name": "OpenRouter",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "required_env": ["OPENROUTER_API_KEY"],
+        "model_prefix": "openrouter/",
+        "needs_base_url": False,
+        "is_local": False,
+        "default_models": {
+            "fast":    "openrouter/meta-llama/llama-3.1-8b-instruct",
+            "capable": "openrouter/anthropic/claude-sonnet-4",
+            "best":    "openrouter/anthropic/claude-opus-4",
         },
     },
 }
@@ -177,6 +266,42 @@ _LOCAL_PROVIDERS = frozenset({
     "vllm",
     "lmstudio",
 })
+
+_TIER_FAST_HINTS = (
+    "fast",
+    "quick",
+    "cheap",
+    "small",
+    "mini",
+    "low latency",
+)
+_TIER_BEST_HINTS = (
+    "best",
+    "premium",
+    "highest quality",
+    "reasoning",
+    "advanced",
+    "max quality",
+    "large",
+    "70b",
+)
+
+
+def infer_model_tier(model_id: str, description: str) -> ModelTier:
+    """Infer a model tier from free-text model metadata.
+
+    This keeps registration UX description-first while preserving the tier-based
+    scheduling contract required by blueprints.
+    """
+    text = f"{model_id} {description}".strip().lower()
+    if not text:
+        return ModelTier.CAPABLE
+
+    if any(hint in text for hint in _TIER_BEST_HINTS):
+        return ModelTier.BEST
+    if any(hint in text for hint in _TIER_FAST_HINTS):
+        return ModelTier.FAST
+    return ModelTier.CAPABLE
 
 
 @dataclass
@@ -318,8 +443,8 @@ class LLMPool:
                 return (
                     is_overloaded,
                     local_miss,
-                    tier_distance,
                     -relevance,
+                    tier_distance,
                     m.cost_per_1k_tokens,
                 )
 

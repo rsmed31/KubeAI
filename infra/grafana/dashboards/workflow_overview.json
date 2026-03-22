@@ -1,0 +1,64 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Tasks Per Minute",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "rate(kubeai_tasks_total[5m]) * 60",
+          "legendFormat": "{{blueprint}} - {{status}}"
+        }
+      ]
+    },
+    {
+      "title": "Task Latency (p50 / p95)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "kubeai_task_latency_ms_sum / kubeai_task_latency_ms_count",
+          "legendFormat": "avg latency {{blueprint}}"
+        }
+      ]
+    },
+    {
+      "title": "Active Agents",
+      "type": "gauge",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "kubeai_agent_pool_size",
+          "legendFormat": "{{blueprint}} - {{state}}"
+        }
+      ]
+    },
+    {
+      "title": "Token Cost (cumulative)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 8 },
+      "targets": [
+        {
+          "expr": "kubeai_token_cost_total",
+          "legendFormat": "{{blueprint}}"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["kubeai"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "KubeAI - Workflow Overview",
+  "uid": "kubeai-workflow-overview"
+}

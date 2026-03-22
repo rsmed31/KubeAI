@@ -11,6 +11,7 @@ from KubeAI.orchestrator.assignment import AssignmentPolicy
 from KubeAI.api.control_plane import ControlPlaneAPI
 from KubeAI.scheduler.lifecycle import AgentLifecycleManager, SpawnedAgent
 from KubeAI.deployment import (
+    AutoscaleSignals,
     DeploymentSpec,
     DeploymentStatus,
     DeploymentReconciler,
@@ -31,6 +32,7 @@ def llm_pool() -> LLMPool:
             provider="openai",
             tier=ModelTier.FAST,
             cost_per_1k_tokens=0.001,
+            api_key="test-key",
         )
     )
     return pool
@@ -89,9 +91,9 @@ def spec() -> DeploymentSpec:
 # ---------------------------------------------------------------------------
 
 class TestDeploymentSpecValidation:
-    def test_min_replicas_must_be_at_least_one(self) -> None:
+    def test_min_replicas_must_be_non_negative(self) -> None:
         with pytest.raises(ValueError, match="min_replicas"):
-            DeploymentSpec(name="d", blueprint_name="bp", min_replicas=0)
+            DeploymentSpec(name="d", blueprint_name="bp", min_replicas=-1)
 
     def test_max_replicas_must_be_gte_min(self) -> None:
         with pytest.raises(ValueError, match="max_replicas"):
@@ -113,6 +115,10 @@ class TestDeploymentSpecValidation:
         spec = DeploymentSpec(name="d", blueprint_name="bp")
         with pytest.raises((AttributeError, TypeError)):
             spec.replicas = 99  # type: ignore[misc]
+
+    def test_max_token_cost_per_task_must_be_positive_when_provided(self) -> None:
+        with pytest.raises(ValueError, match="max_token_cost_per_task"):
+            DeploymentSpec(name="d", blueprint_name="bp", max_token_cost_per_task=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -309,3 +315,46 @@ class TestHorizontalAgentScaler:
         r = repr(scaler)
         assert "HorizontalAgentScaler" in r
         assert "DeploymentReconciler" in r
+
+    def test_queue_depth_scales_up_even_when_load_is_moderate(
+        self,
+        scaler: HorizontalAgentScaler,
+        reconciler: DeploymentReconciler,
+        lifecycle: AgentLifecycleManager,
+        spec: DeploymentSpec,
+    ) -> None:
+        reconciler.reconcile(spec)
+        baseline = len(lifecycle.list_agents())
+
+        status = scaler.scale_by_signals(
+            spec,
+            AutoscaleSignals(observed_load=0.55, queue_depth=12),
+        )
+
+        assert len(lifecycle.list_agents()) >= baseline
+        assert status.desired >= baseline
+
+    def test_high_token_cost_dampens_scale_up(
+        self,
+        scaler: HorizontalAgentScaler,
+        reconciler: DeploymentReconciler,
+        lifecycle: AgentLifecycleManager,
+    ) -> None:
+        capped_spec = DeploymentSpec(
+            name="cost-capped",
+            blueprint_name="test-agent",
+            replicas=3,
+            min_replicas=1,
+            max_replicas=5,
+            target_load=0.7,
+            max_token_cost_per_task=0.01,
+        )
+        reconciler.reconcile(capped_spec)
+
+        status = scaler.scale_by_signals(
+            capped_spec,
+            AutoscaleSignals(observed_load=0.95, queue_depth=10, avg_token_cost=0.05),
+        )
+
+        assert status.desired <= 3
+        assert len(lifecycle.list_agents()) <= 3

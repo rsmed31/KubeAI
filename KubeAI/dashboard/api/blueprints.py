@@ -1,13 +1,12 @@
 """Blueprints API — the kubectl get/apply deployment analogue for agent blueprint management."""
 import re
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from ..state import RuntimeState
+from KubeAI.blueprint import Blueprint
+from KubeAI.orchestrator.llm_pool import ModelTier
+from KubeAI.dashboard.deps import Runtime, get_runtime
 
 router = APIRouter()
-
-# In-memory registry for newly registered blueprints
-_custom_blueprints: list[dict] = []
 
 
 class GenerateBlueprintRequest(BaseModel):
@@ -95,14 +94,25 @@ spec:
 
 
 @router.get("/blueprints")
-def list_blueprints() -> list[dict]:
+def list_blueprints(runtime: Runtime = Depends(get_runtime)) -> list[dict]:
     """List all registered blueprints.
 
     Analogous to 'kubectl get deployments' — returns built-in and
     user-registered agent blueprints.
     """
-    state = RuntimeState()
-    return state.get_blueprints() + _custom_blueprints
+    result: list[dict] = []
+    for bp in runtime.registry.list_blueprints():
+        result.append(
+            {
+                "name": bp.name,
+                "description": bp.description,
+                "tier": bp.tier.value,
+                "version": bp.version,
+                "capabilities": sorted(bp.required_capabilities),
+                "system_prompt": bp.system_prompt,
+            }
+        )
+    return result
 
 
 @router.post("/blueprints/generate")
@@ -123,12 +133,32 @@ def register_blueprint(body: RegisterBlueprintRequest) -> dict:
     Analogous to 'kubectl apply -f blueprint.yaml' — adds the blueprint
     to the in-memory registry so it can be used for task routing.
     """
-    blueprint = {
-        "name": body.name,
-        "description": body.description,
-        "tier": body.tier,
-        "version": body.version,
-        "capabilities": body.capabilities,
+    runtime = get_runtime()
+
+    try:
+        tier = ModelTier(body.tier)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid tier: {body.tier!r}") from exc
+
+    blueprint = Blueprint(
+        name=body.name,
+        description=body.description,
+        tier=tier,
+        system_prompt=(
+            f"You are a specialized AI agent for: {body.description}. "
+            "Operate within KubeAI runtime constraints."
+        ),
+        required_capabilities=frozenset(body.capabilities),
+        version=body.version,
+    )
+    runtime.registry.register(blueprint)
+    return {
+        "registered": True,
+        "blueprint": {
+            "name": blueprint.name,
+            "description": blueprint.description,
+            "tier": blueprint.tier.value,
+            "version": blueprint.version,
+            "capabilities": sorted(blueprint.required_capabilities),
+        },
     }
-    _custom_blueprints.append(blueprint)
-    return {"registered": True, "blueprint": blueprint}

@@ -365,5 +365,337 @@ def demo() -> None:
     click.echo("5. agentctl status")
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _api_base() -> str:
+    import os
+    return os.environ.get("KUBEAI_API_URL", "http://localhost:8080").rstrip("/")
+
+
+def _api_get(path: str) -> Any:
+    """Perform a GET request against the KubeAI API. Returns parsed JSON."""
+    import urllib.request
+    url = f"{_api_base()}{path}"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as exc:
+        raise click.ClickException(f"API request failed ({url}): {exc}") from exc
+
+
+def _api_post(path: str, payload: dict[str, Any]) -> Any:
+    """Perform a POST request against the KubeAI API. Returns parsed JSON."""
+    import urllib.request
+    url = f"{_api_base()}{path}"
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as exc:
+        raise click.ClickException(f"API request failed ({url}): {exc}") from exc
+
+
+def _api_put(path: str, payload: dict[str, Any]) -> Any:
+    """Perform a PUT request against the KubeAI API. Returns parsed JSON."""
+    import urllib.request
+    url = f"{_api_base()}{path}"
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        url, data=data,
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as exc:
+        raise click.ClickException(f"API request failed ({url}): {exc}") from exc
+
+
+# ── Benchmarks commands ───────────────────────────────────────────────────────
+
+@main.group("benchmarks")
+def benchmarks_group() -> None:
+    """Benchmark framework adapters against standardised scenarios."""
+
+
+@benchmarks_group.command("list")
+def benchmarks_list() -> None:
+    """List all stored benchmark run results."""
+    rows = _api_get("/api/benchmarks/runs")
+    if not rows:
+        click.echo("No benchmark runs recorded yet.")
+        return
+
+    click.echo(f"{'RUN ID':<38} {'SCENARIO':<14} {'FRAMEWORK':<12} {'QUALITY':>7} {'LATENCY ms':>11} {'COST':>9}  RECORDED AT")
+    click.echo("-" * 110)
+    for r in rows:
+        click.echo(
+            f"{r.get('run_id', ''):<38}"
+            f" {r.get('scenario', ''):<14}"
+            f" {r.get('framework', ''):<12}"
+            f" {r.get('quality_score', 0.0):>7.4f}"
+            f" {r.get('latency_ms', 0.0):>11.1f}"
+            f" {r.get('token_cost', 0.0):>9.6f}"
+            f"  {r.get('recorded_at', '')}"
+        )
+
+
+@benchmarks_group.command("run")
+@click.option(
+    "--scenario",
+    type=click.Choice(["rag", "codegen", "research", "data_analysis"]),
+    required=True,
+    help="Benchmark scenario to execute.",
+)
+@click.option(
+    "--framework",
+    type=str,
+    default=None,
+    help="Adapter name (e.g. litellm). Omit to run all registered adapters.",
+)
+@click.option(
+    "--num-runs",
+    type=int,
+    default=3,
+    show_default=True,
+    help="Number of times to run each adapter.",
+)
+def benchmarks_run(scenario: str, framework: str | None, num_runs: int) -> None:
+    """Trigger a benchmark run and display the new result records."""
+    payload: dict[str, Any] = {"scenario": scenario, "num_runs": num_runs}
+    if framework:
+        payload["framework"] = framework
+
+    click.echo(f"Running benchmark scenario '{scenario}' ({num_runs} run(s))...")
+    rows = _api_post("/api/benchmarks/run", payload)
+
+    if not rows:
+        click.echo("No results returned.")
+        return
+
+    click.echo(f"\n{'FRAMEWORK':<12} {'QUALITY':>7} {'LATENCY ms':>11} {'COST':>9}")
+    click.echo("-" * 46)
+    for r in rows:
+        click.echo(
+            f"{r.get('framework', ''):<12}"
+            f" {r.get('quality_score', 0.0):>7.4f}"
+            f" {r.get('latency_ms', 0.0):>11.1f}"
+            f" {r.get('token_cost', 0.0):>9.6f}"
+        )
+    click.echo(f"\n{len(rows)} result(s) stored. Run 'agentctl benchmarks leaderboard' to compare.")
+
+
+@benchmarks_group.command("leaderboard")
+def benchmarks_leaderboard() -> None:
+    """Show aggregated benchmark leaderboard sorted by quality score."""
+    rows = _api_get("/api/benchmarks/leaderboard")
+    if not rows:
+        click.echo("No benchmark data available. Run 'agentctl benchmarks run' first.")
+        return
+
+    click.echo(f"{'#':<4} {'FRAMEWORK':<14} {'SCENARIO':<14} {'AVG QUALITY':>11} {'AVG LATENCY ms':>15} {'AVG COST':>10} {'RUNS':>5}")
+    click.echo("-" * 80)
+    for i, r in enumerate(rows, start=1):
+        click.echo(
+            f"{i:<4}"
+            f" {r.get('framework', ''):<14}"
+            f" {r.get('scenario', ''):<14}"
+            f" {r.get('avg_quality_score', 0.0):>11.4f}"
+            f" {r.get('avg_latency_ms', 0.0):>15.1f}"
+            f" {r.get('avg_token_cost', 0.0):>10.6f}"
+            f" {r.get('num_runs', 0):>5}"
+        )
+
+
+# ── Config commands ───────────────────────────────────────────────────────────
+
+@main.group("config")
+def config_group() -> None:
+    """Runtime configuration management."""
+
+
+@config_group.command("get")
+@click.argument("key")
+def config_get(key: str) -> None:
+    """Get the current value of a config key (e.g. rag.default_template)."""
+    result = _api_get(f"/api/config/{key}")
+    click.echo(f"{result['key']} = {json.dumps(result['value'])}")
+
+
+@config_group.command("set")
+@click.argument("key")
+@click.argument("value")
+@click.option("--category", default="", help="Config category override.")
+@click.option("--description", default="", help="Human-readable description.")
+def config_set(key: str, value: str, category: str, description: str) -> None:
+    """Set a config key to VALUE (parsed as JSON if possible, else kept as string)."""
+    # Attempt JSON decode so booleans, numbers, and objects work
+    try:
+        parsed_value: Any = json.loads(value)
+    except json.JSONDecodeError:
+        parsed_value = value
+
+    payload: dict[str, Any] = {"value": parsed_value}
+    if category:
+        payload["category"] = category
+    if description:
+        payload["description"] = description
+
+    result = _api_put(f"/api/config/{key}", payload)
+    click.echo(f"Updated: {result['key']} = {json.dumps(result['value'])}")
+
+
+@config_group.command("list")
+def config_list() -> None:
+    """List all config entries grouped by category."""
+    grouped = _api_get("/api/config")
+    if not grouped:
+        click.echo("No config entries found.")
+        return
+
+    for category in sorted(grouped.keys()):
+        entries = grouped[category]
+        click.echo(f"\n[{category}]")
+        click.echo(f"  {'KEY':<45} {'VALUE':<30} DESCRIPTION")
+        click.echo("  " + "-" * 90)
+        for entry in sorted(entries, key=lambda e: e.get("key", "")):
+            raw_val = json.dumps(entry.get("value"))
+            val_display = raw_val if len(raw_val) <= 30 else raw_val[:27] + "..."
+            click.echo(
+                f"  {entry.get('key', ''):<45}"
+                f" {val_display:<30}"
+                f" {entry.get('description', '')}"
+            )
+
+
+# ── Skills commands ───────────────────────────────────────────────────────────
+
+@main.group("skills")
+def skills_group() -> None:
+    """Skill registry management."""
+
+
+@skills_group.command("list")
+def skills_list() -> None:
+    """List all registered skills."""
+    rows = _api_get("/api/skills")
+    if not rows:
+        click.echo("No skills registered.")
+        return
+
+    click.echo(f"{'ID':<10} {'NAME':<24} {'ENABLED':<8} {'TAGS':<30} DESCRIPTION")
+    click.echo("-" * 100)
+    for s in rows:
+        tags = ", ".join(s.get("tags") or []) or "-"
+        enabled = "yes" if s.get("enabled", True) else "no"
+        click.echo(
+            f"{s.get('skill_id', ''):<10}"
+            f" {s.get('name', ''):<24}"
+            f" {enabled:<8}"
+            f" {tags:<30}"
+            f" {s.get('description', '')}"
+        )
+
+
+@skills_group.command("create")
+@click.argument("name")
+@click.argument("system_prompt")
+@click.option("--description", default="", help="Short description of the skill.")
+@click.option("--tags", default="", help="Comma-separated tags (e.g. rag,coding).")
+def skills_create(name: str, system_prompt: str, description: str, tags: str) -> None:
+    """Create a new skill with NAME and SYSTEM_PROMPT."""
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    payload: dict[str, Any] = {
+        "name": name,
+        "system_prompt": system_prompt,
+        "description": description,
+        "tags": tag_list,
+        "mcp_tools": [],
+        "workflow_steps": [],
+        "visibility": {},
+    }
+    result = _api_post("/api/skills", payload)
+    click.echo(f"Created skill '{result['name']}' with ID {result['skill_id']}")
+
+
+# ── Adapters commands (local — no server required) ────────────────────────────
+
+@main.group("adapters")
+def adapters_group() -> None:
+    """Framework adapter registry operations (local)."""
+
+
+@adapters_group.command("list")
+def adapters_list() -> None:
+    """List all adapters that can be imported in this environment."""
+    from KubeAI.adapters.registry import AdapterRegistry
+
+    registry = AdapterRegistry()
+
+    # Register all known adapters that are importable
+    _register_available_adapters(registry)
+
+    adapters = registry.list_adapters()
+    if not adapters:
+        click.echo("No adapters available. Install adapter dependencies (litellm, langchain, etc.).")
+        return
+
+    click.echo(f"{'NAME':<20} {'HEALTHY':<8} MODULE")
+    click.echo("-" * 60)
+    for adapter in sorted(adapters, key=lambda a: a.name):
+        healthy = "yes" if adapter.health_check() else "no"
+        module = type(adapter).__module__
+        click.echo(f"{adapter.name:<20} {healthy:<8} {module}")
+
+
+@adapters_group.command("health")
+def adapters_health() -> None:
+    """Run health_check() on each available adapter and report status."""
+    from KubeAI.adapters.registry import AdapterRegistry
+
+    registry = AdapterRegistry()
+    _register_available_adapters(registry)
+
+    adapters = registry.list_adapters()
+    if not adapters:
+        click.echo("No adapters found to health-check.")
+        return
+
+    all_healthy = True
+    for adapter in sorted(adapters, key=lambda a: a.name):
+        healthy = adapter.health_check()
+        status = "HEALTHY" if healthy else "UNHEALTHY"
+        if not healthy:
+            all_healthy = False
+        click.echo(f"  {adapter.name:<20} {status}")
+
+    if all_healthy:
+        click.echo("\nAll adapters healthy.")
+    else:
+        click.echo("\nOne or more adapters are unhealthy. Check that their dependencies are installed.")
+
+
+def _register_available_adapters(registry: Any) -> None:
+    """Attempt to import and register each known adapter."""
+    candidates = [
+        ("KubeAI.adapters.litellm_adapter", "LiteLLMAdapter"),
+        ("KubeAI.adapters.langchain_adapter", "LangChainAdapter"),
+        ("KubeAI.adapters.llamaindex_adapter", "LlamaIndexAdapter"),
+        ("KubeAI.adapters.autogen_adapter", "AutoGenAdapter"),
+        ("KubeAI.adapters.crewai_adapter", "CrewAIAdapter"),
+    ]
+    for module_path, class_name in candidates:
+        try:
+            import importlib
+            mod = importlib.import_module(module_path)
+            cls = getattr(mod, class_name)
+            registry.register(cls())
+        except Exception:
+            # Adapter dependencies not installed — skip silently
+            pass
+
+
 if __name__ == "__main__":
     main()

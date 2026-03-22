@@ -26,7 +26,7 @@ class SpawnedAgent:
     blueprint: Blueprint
     assignment: Assignment
     spawned_at: float = field(default_factory=time.time)
-    state: str = "running"       # running | idle | terminated
+    state: str = "pending"       # pending | running | idle | terminated
     task_count: int = 0
     # Per-agent task queue and executor thread (Gap 2)
     _task_queue: Any = field(default=None, repr=False, compare=False)
@@ -96,8 +96,8 @@ class AgentLifecycleManager:
             agent_id=agent_id,
             name=f"{blueprint.name}-{agent_id[-4:]}",
             description=blueprint.description,
-            state="running",
-            healthy=True,
+            state="pending",
+            healthy=False,
             load=0.0,
             capabilities=tuple(sorted(blueprint.required_capabilities)),
             metadata={
@@ -137,11 +137,17 @@ class AgentLifecycleManager:
             pass
 
     def record_task_complete(self, agent_id: str) -> None:
-        """Increment task counter for an agent."""
+        """Increment task counter and mark the agent healthy after first successful task."""
         with self._lock:
             agent = self._agents.get(agent_id)
             if agent:
                 agent.task_count += 1
+                if agent.state == "pending":
+                    agent.state = "running"
+                    try:
+                        self._cp.update_agent_state(agent_id, state="running", healthy=True)
+                    except KeyError:
+                        pass
 
     def terminate(self, agent_id: str) -> bool:
         """Terminate an agent, snapshot working memory, update control plane."""

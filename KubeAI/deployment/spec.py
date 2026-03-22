@@ -17,15 +17,18 @@ class DeploymentSpec:
     max_replicas: int = 10
     target_load: float = 0.7             # HPA target utilisation (0.0-1.0)
     cost_hint: float = 0.5
+    max_token_cost_per_task: float | None = None
     labels: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.min_replicas < 1:
-            raise ValueError("min_replicas must be >= 1")
+        if self.min_replicas < 0:
+            raise ValueError("min_replicas must be >= 0")
         if self.max_replicas < self.min_replicas:
             raise ValueError("max_replicas must be >= min_replicas")
         if not (0.0 < self.target_load <= 1.0):
             raise ValueError("target_load must be in (0.0, 1.0]")
+        if self.max_token_cost_per_task is not None and self.max_token_cost_per_task <= 0.0:
+            raise ValueError("max_token_cost_per_task must be > 0 when provided")
 
     def __repr__(self) -> str:
         return (

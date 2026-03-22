@@ -206,4 +206,28 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Node.js / React
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Package manager caches
+.npm/
+.pnpm-store/
+.yarn/
+
+# React and frontend build artifacts
+build/
+dist/
+.parcel-cache/
+.next/
+out/
+coverage/
+.eslintcache
+*.tsbuildinfo
+
 plan.md
+
+.claude/*

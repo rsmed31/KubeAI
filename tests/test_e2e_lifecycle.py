@@ -115,9 +115,12 @@ class TestFullLifecycle:
         assignment = orchestrator.assign(blueprint, task=task)
         assert assignment.model_id == "claude-sonnet-4"
 
-        # Spawn
+        # Spawn starts in pending until first successful completion.
         agent = lifecycle.spawn(blueprint)
         assert agent.agent_id.startswith("agent-")
+        assert agent.state == "pending"
+
+        lifecycle.record_task_complete(agent.agent_id)
         assert agent.state == "running"
 
         # Agent appears in ControlPlaneAPI
@@ -125,7 +128,7 @@ class TestFullLifecycle:
         agent_ids = [r.agent_id for r in records]
         assert agent.agent_id in agent_ids
 
-        # State is running
+        # State becomes running after first successful completion
         record = control_plane.get_agent(agent.agent_id)
         assert record.state == "running"
 
@@ -160,7 +163,8 @@ class TestFullLifecycle:
         ) = _make_system()
 
         bp = registry.get("coding_agent")
-        lifecycle.spawn(bp)
+        agent = lifecycle.spawn(bp)
+        lifecycle.record_task_complete(agent.agent_id)
 
         overview = control_plane.get_overview()
         assert overview["active_agents"] >= 1
@@ -189,7 +193,7 @@ class TestFullLifecycle:
         bp = registry.get("research_agent")
         agent = lifecycle.spawn(bp)
 
-        assert control_plane.get_agent(agent.agent_id).state == "running"
+        assert control_plane.get_agent(agent.agent_id).state == "pending"
 
         lifecycle.terminate(agent.agent_id)
 

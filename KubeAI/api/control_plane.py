@@ -302,6 +302,8 @@ class ControlPlaneAPI:
         blueprint: str | None = None,
         data: str | None = None,
         data_url: str | None = None,
+        data_urls: list[str] | None = None,
+        file_names: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create a new queued task record and emit a task.submitted event."""
         import uuid
@@ -340,6 +342,8 @@ class ControlPlaneAPI:
             "timestamp": timestamp,
             "data": data,
             "data_url": data_url,
+            "data_urls": data_urls or [],
+            "file_names": file_names or [],
         }
         self._task_queue.put(queue_item)
         return result
@@ -448,6 +452,48 @@ class ControlPlaneAPI:
     def metrics_text(self) -> str:
         """Return Prometheus-style metrics text."""
         return self._metrics.render_prometheus_text()
+
+    def autoscale_signals(
+        self,
+        *,
+        blueprint: str | None = None,
+        recent_tasks: int = 50,
+    ) -> dict[str, float]:
+        """Return queue and token-cost signals used by autoscaling controllers."""
+        with self._lock:
+            tasks = list(self._tasks.values())
+
+        pending_states = {
+            "queued",
+            "routing",
+            "assigned",
+            "data_probing",
+            "scraping",
+            "rag_loaded",
+            "spawned",
+            "executing",
+        }
+
+        if blueprint is not None:
+            tasks = [task for task in tasks if task.blueprint == blueprint]
+
+        pending_count = sum(1 for task in tasks if task.status in pending_states)
+        queue_depth = float(max(self._task_queue.qsize(), pending_count))
+
+        completed = [task for task in tasks if task.token_cost > 0]
+        completed = sorted(completed, key=lambda task: task.timestamp)
+        window = completed[-max(1, recent_tasks):]
+        avg_token_cost = (
+            float(sum(task.token_cost for task in window) / len(window))
+            if window
+            else 0.0
+        )
+
+        return {
+            "queue_depth": queue_depth,
+            "avg_token_cost": avg_token_cost,
+            "sample_size": float(len(window)),
+        }
 
     @staticmethod
     def _infer_blueprint_name(card: "A2AAgentCard") -> str:

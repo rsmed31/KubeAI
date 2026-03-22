@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import pathlib
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -49,6 +50,9 @@ def _make_ws_payload(cp) -> dict:
                 "capabilities": sorted(s.capabilities),
                 "healthy": s.healthy,
                 "description": s.description,
+                "transport": s.transport,
+                "timeout_s": s.timeout_s,
+                "tags": sorted(s.tags),
             })
     except Exception:
         pass
@@ -71,7 +75,8 @@ def _make_ws_payload(cp) -> dict:
                 "tier": a.metadata.get("tier", "unknown"),
                 "load": a.load,
                 "healthy": a.healthy,
-                "mcp_servers": list(a.capabilities),
+                "capabilities": list(a.capabilities),
+                "mcp_servers": list(a.metadata.get("mcp_servers", [])),
             }
             for a in agents_list
         ],
@@ -107,8 +112,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from KubeAI.dashboard.deps import get_cluster_registry
     get_cluster_registry()  # initialise registry with default cluster
     cp = runtime.control_plane
+
+    # Default to a clean runtime start so stale runtime state is never shown.
+    # Only clear agents/tasks (runtime state), NOT models/MCPs (infrastructure config).
+    # Set KUBEAI_CLEAN_START=0 to preserve in-memory state on startup.
+    if os.environ.get("KUBEAI_CLEAN_START", "1").strip() != "0":
+        with cp._lock:  # noqa: SLF001
+            cp._agents.clear()  # noqa: SLF001
+            cp._tasks.clear()  # noqa: SLF001
+            cp._task_stages.clear()  # noqa: SLF001
+
     state_store = StateStore()
-    state_store.load(cp)
+    if os.environ.get("KUBEAI_RESTORE_STATE", "").strip() == "1":
+        state_store.load(cp)
     state_store.start_periodic_checkpoint(cp)
 
     async def _push_loop() -> None:
@@ -123,12 +139,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(title="KubeAI Dashboard", lifespan=lifespan)
 
+# CORS for React dev server (Vite on localhost:5173)
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(overview.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
 app.include_router(tasks.router, prefix="/api")
 app.include_router(memory.router, prefix="/api")
 app.include_router(blueprints.router, prefix="/api")
 app.include_router(monitoring.router, prefix="/api")
+
+# ── Config & Skills API routers ────────────────────────────────────────────
+from KubeAI.dashboard.api.config import router as config_router, skills_router
+app.include_router(config_router)
+app.include_router(skills_router)
 
 # ── Cluster API router ─────────────────────────────────────────────────────
 from KubeAI.dashboard.api import cluster as cluster_api
@@ -137,6 +168,10 @@ app.include_router(cluster_api.router, prefix="/api")
 # ── Orchestrator API router ─────────────────────────────────────────────────
 from KubeAI.dashboard.api import orchestrator as orchestrator_api
 app.include_router(orchestrator_api.router, prefix="/api")
+
+# ── Benchmarks API router ────────────────────────────────────────────────────
+from KubeAI.dashboard.api import benchmarks as benchmarks_api
+app.include_router(benchmarks_api.router, prefix="/api")
 
 
 @app.websocket("/ws")
