@@ -34,7 +34,6 @@ frameworks = [
     "langchain-core>=0.3",
     "llama-index>=0.10",
     "pyautogen>=0.2",
-    "crewai>=0.1",
 ]
 dev = ["pytest", "pytest-cov", "respx>=0.20", "httpx>=0.27"]
 all = [
@@ -46,7 +45,6 @@ all = [
     "langchain-core>=0.3",
     "llama-index>=0.10",
     "pyautogen>=0.2",
-    "crewai>=0.1",
     "sentence-transformers",
 ]
 
